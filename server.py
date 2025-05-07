@@ -639,7 +639,7 @@ class Server:
                     with no_grad_context:
                         # Decompress received data
                         output, original_size = self.compress_data.decompress_data(
-                            compressed_data=compressed_data
+                            data=compressed_data
                         )
 
                         # Process data using the experiment's model

@@ -65,7 +65,7 @@ compression:
 # ENCRYPTION CONFIGURATIONS
 # ================================================================
 encryption:
-  enabled: false                    # Set to true to enable encryption
+  enabled: true                    # Set to true to enable encryption
   password: null                    # Optional password for encryption
   key_file: null                    # Optional path to encryption key file
   degree: 8192                      # Polynomial modulus degree
