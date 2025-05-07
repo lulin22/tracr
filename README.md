@@ -44,7 +44,7 @@
    ```bash
    git clone https://github.com/nbovee/tracr.git && cd tracr
    python3 -m venv venv && source venv/bin/activate
-   pip install -r requirements.txt
+   pip install -r requirements.txt # alternatively, use the requirements-cu###.txt file for your cuda version.
    ```
 
 2. **Configure devices** by copying and editing the template
@@ -327,7 +327,10 @@ Select optimal split points based on:
 <summary>Unit Testing</summary>
 - If issues present themselves, the provided unit tests may have some insight to the error. Please run the following, and refine to individual files for further details:
   
-  ```python -m unittest discovery -s ./tests```
+  ```python -m unittest discover -s ./tests```
+  or if using uv, the command will be:
+
+  ```uv run -m unittest discover -s ./tests```
 </details>
 
 <summary>Connection Issues</summary>
@@ -377,17 +380,13 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) for deta
 
 ## Citation
 
-```bibtex
-@inproceedings{bovee2025splitracr,
-  author = {Bovee, Nicholas and Ali, Izhar and Patapanchala, Gopi and Bitla, Suraj and Ho, Shen Shyang},
-  title = {SplitTracr: A Flexible Performance Evaluation Tool for Cooperative Inference and Split Computing},
-  booktitle = {Proceedings of the International Conference on Performance Engineering (ICPE)},
-  year = {2025},
-  address = {Toronto, Canada},
-  month = {May},
-  publisher = {ACM/SPEC}
-}
-```
+Please cite the following DOIs if you use SplitTracr in your work:
+
+**Upcoming publication in ICPE Companion '25**: [https://doi.org/10.1145/3680256.3721971](https://doi.org/10.1145/3680256.3721971)
+
+**Zenodo Repository Archive**: [https://doi.org/10.5281/zenodo.15048915](https://doi.org/10.5281/zenodo.15048915)
+
+These are the same DOIs as in the CITATION.cff file. A BibTeX entry will be provided once the paper is published by ACM.
 
 ## References
 
