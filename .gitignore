@@ -158,3 +158,6 @@ NOTES.md
 # keys
 *.rsa
 *.pem
+
+.cursorrules
+.DS_Store

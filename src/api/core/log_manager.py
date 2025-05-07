@@ -407,14 +407,85 @@ def _configure_logger(
         )
 
 
+def is_port_in_use(port: int) -> bool:
+    """Check if a port is already in use."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            # Try to bind to the port
+            s.bind(("", port))
+            # If we get here, the port is free
+            return False
+        except OSError:
+            # If we get an error, the port is in use
+            return True
+
+
+def find_available_port(start_port: int = DEFAULT_PORT, max_attempts: int = 10) -> int:
+    """Find an available port starting from start_port."""
+    current_port = start_port
+    for _ in range(max_attempts):
+        if not is_port_in_use(current_port):
+            return current_port
+        current_port += 1
+    # If we can't find a free port, return the original port and let the caller handle the error
+    return start_port
+
+
+# Track the active logging server
+_active_logging_server = None
+
+def get_logging_server() -> Optional[DaemonThreadingTCPServer]:
+    """Get the active logging server instance if one exists."""
+    return _active_logging_server
+
 def start_logging_server(
     port: int = DEFAULT_PORT,
     device: Optional[DeviceType] = None,
     config: Optional[Dict[str, Any]] = None,
+    find_free_port: bool = True,
+    disable_logging_server: bool = False,
 ) -> Optional[DaemonThreadingTCPServer]:
-    """Start a TCP server for centralized logging."""
+    """Start a TCP server for centralized logging.
+
+    Args:
+        port: Port to use for the logging server
+        device: Device type for logger context
+        config: Configuration dictionary
+        find_free_port: If True, will try to find an available port if the specified one is in use
+        disable_logging_server: If True, will not start a logging server at all (useful for worker processes)
+
+    Returns:
+        The server object or None if disabled or if already running
+    """
+    global _active_logging_server
+    
     # Set up logger first
     logger = setup_logger(is_server=True, device=device, config=config)
+
+    # If logging server is disabled, return early
+    if disable_logging_server:
+        logger.debug("Logging server disabled by configuration")
+        return None
+
+    # Check if we're in a worker process (multiprocessing)
+    if threading.current_thread().name != "MainThread":
+        logger.debug("Skipping logging server in worker thread")
+        return None
+
+    # Check if the port is already in use
+    if is_port_in_use(port):
+        if find_free_port:
+            # Try to find an available port
+            original_port = port
+            port = find_available_port(port)
+            if port != original_port:
+                logger.info(f"Port {original_port} in use, using port {port} instead")
+            else:
+                logger.warning(f"Could not find an available port, will try to use {port}")
+        else:
+            # Port is in use and we're not looking for a new one
+            logger.info(f"Logging server already running on port {port}, not starting a new one")
+            return None
 
     try:
         # Create and start the server
@@ -427,6 +498,7 @@ def start_logging_server(
         server_thread.start()
 
         logger.info(f"Logging server started on port {port}")
+        _active_logging_server = server
         return server
 
     except OSError as e:
@@ -437,11 +509,17 @@ def start_logging_server(
 
 def shutdown_logging_server(server: DaemonThreadingTCPServer) -> None:
     """Shutdown the logging server gracefully."""
+    global _active_logging_server
+    
     if server:
         logger = logging.getLogger("split_computing_logger")
         logger.info("Shutting down logging server")
         server.shutdown()
         server.server_close()
+        
+        # Clear the active logging server reference
+        if _active_logging_server == server:
+            _active_logging_server = None
 
 
 def get_logger() -> logging.Logger:

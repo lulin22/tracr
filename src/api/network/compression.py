@@ -19,6 +19,7 @@ from .protocols import (
     HIGHEST_PROTOCOL,
 )
 from ..core import NetworkError
+from .encryption import HomomorphicEncryption
 
 logger = logging.getLogger("split_computing_logger")
 
@@ -58,8 +59,14 @@ class DecompressionError(CompressionError):
 class DataCompression:
     """Handles advanced tensor compression for distributed neural network computation."""
 
-    def __init__(self, config: Dict[str, Any]) -> None:
-        """Initialize tensor compression engine with optimal configuration."""
+    def __init__(self, config: Dict[str, Any], encryption: Optional[HomomorphicEncryption] = None) -> None:
+        """
+        Initialize compression and encryption engine with configuration.
+        
+        Args:
+            config: Compression configuration
+            encryption: Optional encryption module for secure tensor transmission
+        """
         self.config = CompressionConfig(
             clevel=config.get("clevel", 3),
             filter=config.get("filter", "NOSHUFFLE"),
@@ -68,15 +75,23 @@ class DataCompression:
         # Map string parameters to actual blosc2 enum values for direct API use
         self._filter = blosc2.Filter[self.config.filter]
         self._codec = blosc2.Codec[self.config.codec]
+        
+        # Store encryption module if provided
+        self.encryption = encryption
+        self.encryption_enabled = encryption is not None
+        
+        if self.encryption_enabled:
+            logger.info("Homomorphic encryption enabled for tensor transmission")
 
     def compress_data(self, data: Any) -> Tuple[bytes, int]:
         """
-        Compress tensor data for network transmission using Blosc2.
+        Compress and optionally encrypt tensor data for network transmission.
 
         === TENSOR SHARING - COMPRESSION PHASE ===
         Optimizes neural network tensors for network transmission by:
         1. Serializing the tensor data structure with pickle
         2. Applying compression with tuned parameters for tensor data patterns
+        3. Applying homomorphic encryption if enabled
 
         Returns a tuple of (compressed_bytes, compressed_length)
         """
@@ -91,29 +106,72 @@ class DataCompression:
                 filter=self._filter,
                 codec=self._codec,
             )
+            
+            # Apply encryption if enabled
+            if self.encryption_enabled:
+                try:
+                    # Use homomorphic encryption to encrypt the compressed data
+                    encrypted_data, metadata = self.encryption.encrypt(compressed_data)
+                    
+                    # Serialize metadata for transmission
+                    metadata_bytes = pickle.dumps(metadata, protocol=HIGHEST_PROTOCOL)
+                    
+                    # Prepend metadata length as 4 bytes, then metadata, then encrypted data
+                    metadata_len = len(metadata_bytes)
+                    final_data = metadata_len.to_bytes(4, byteorder='big') + metadata_bytes + encrypted_data
+                    
+                    return final_data, len(final_data)
+                except Exception as e:
+                    logger.error(f"Tensor encryption failed: {e}")
+                    raise CompressionError(f"Failed to encrypt tensor data: {e}")
+            
+            # Return compressed data without encryption
             return compressed_data, len(compressed_data)
         except Exception as e:
             logger.error(f"Tensor compression failed: {e}")
             raise CompressionError(f"Failed to compress tensor data: {e}")
 
-    def decompress_data(self, compressed_data: bytes) -> Any:
+    def decompress_data(self, data: bytes) -> Any:
         """
-        Decompress tensor data received over network.
+        Decrypt (if needed) and decompress tensor data.
 
         === TENSOR SHARING - DECOMPRESSION PHASE ===
         Recovers the original tensor structure from compressed network data by:
-        1. Applying Blosc2 decompression to restore serialized bytes
-        2. Deserializing the data back to its original tensor structure
+        1. Decrypting the data if encryption is enabled
+        2. Applying Blosc2 decompression to restore serialized bytes
+        3. Deserializing the data back to its original tensor structure
         """
         try:
-            # Decompress the bytes using Blosc2
-            decompressed = blosc2.decompress(compressed_data)
-
-            # Deserialize back to original tensor data structure
-            return pickle.loads(decompressed)
+            # Handle encrypted data if encryption is enabled
+            if self.encryption_enabled:
+                # Extract metadata length (first 4 bytes)
+                metadata_len = int.from_bytes(data[:4], byteorder='big')
+                
+                # Extract metadata
+                metadata_bytes = data[4:4+metadata_len]
+                metadata = pickle.loads(metadata_bytes)
+                
+                # Extract encrypted data
+                encrypted_data = data[4+metadata_len:]
+                
+                # Decrypt the data
+                compressed_data = self.encryption.decrypt(encrypted_data, metadata)
+                
+                # The result might be bytes or already deserialized tensor
+                if isinstance(compressed_data, bytes):
+                    # If still bytes, deserialize it using pickle
+                    return pickle.loads(compressed_data)
+                else:
+                    # Otherwise return the already deserialized tensor
+                    return compressed_data
+            else:
+                # Standard decompression without encryption
+                decompressed_data = blosc2.decompress(data)
+                return pickle.loads(decompressed_data)
+                
         except Exception as e:
-            logger.error(f"Tensor decompression failed: {e}")
-            raise DecompressionError(f"Failed to decompress tensor data: {e}")
+            logger.error(f"Tensor decryption/decompression failed: {e}")
+            raise DecompressionError(f"Failed to process received tensor data: {e}")
 
     @staticmethod
     def _receive_chunk(conn: socket.socket, size: int) -> bytes:

@@ -4,7 +4,7 @@
 # DEFAULT CONFIGURATIONS
 # ================================================================
 default:
-  device: cuda
+  device: cpu
   save_layer_images: false
   collect_metrics: false
 
@@ -50,7 +50,7 @@ dataset:
 dataloader:
   batch_size: 1
   shuffle: false
-  num_workers: 4
+  num_workers: 0
   collate_fn: imagenet_collate
 
 # ================================================================
@@ -60,3 +60,13 @@ compression:
   clevel: 3
   filter: SHUFFLE
   codec: ZSTD
+
+# ================================================================
+# ENCRYPTION CONFIGURATIONS
+# ================================================================
+encryption:
+  enabled: false                    # Set to true to enable encryption
+  password: null                    # Optional password for encryption
+  key_file: null                    # Optional path to encryption key file
+  degree: 8192                      # Polynomial modulus degree
+  scale: 26                         # Bit scale for encoding precision

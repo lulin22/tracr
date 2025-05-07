@@ -23,6 +23,7 @@ import torch
 from tqdm import tqdm
 
 from ..network import create_network_client, DataCompression
+from ..network.encryption import HomomorphicEncryption, create_encryption
 from .base import BaseExperiment, ProcessingTimes
 
 logger = logging.getLogger("split_computing_logger")
@@ -31,8 +32,28 @@ logger = logging.getLogger("split_computing_logger")
 class NetworkedExperiment(BaseExperiment):
     """Class for running experiments with networked split computing."""
 
-    def __init__(self, config: Dict[str, Any], host: str, port: int):
-        """Initialize the networked experiment with server connection and compression setup."""
+    def __init__(
+        self, 
+        config: Dict[str, Any], 
+        host: str, 
+        port: int,
+        encryption_password: Optional[str] = None,
+        encryption_key_file: Optional[str] = None,
+        encryption_degree: int = 8192,
+        encryption_scale: int = 26
+    ):
+        """
+        Initialize the networked experiment with server connection and compression setup.
+        
+        Args:
+            config: Experiment configuration dictionary
+            host: Server hostname or IP address
+            port: Server port number
+            encryption_password: Optional password for encryption
+            encryption_key_file: Optional path to encryption key file
+            encryption_degree: Polynomial modulus degree for encryption
+            encryption_scale: Bit scale for encryption precision
+        """
         super().__init__(config, host, port)
 
         logger.info(f"Initializing networked experiment with host={host}, port={port}")
@@ -49,11 +70,35 @@ class NetworkedExperiment(BaseExperiment):
                 "codec": "ZSTD",  # Compression algorithm
             }
 
+        # Initialize encryption if parameters are provided
+        self.encryption = None
+        if encryption_password or encryption_key_file:
+            try:
+                logger.info("Initializing tensor encryption...")
+                self.encryption = create_encryption(
+                    password=encryption_password,
+                    key_file=encryption_key_file,
+                    generate_new=(not encryption_password and not encryption_key_file),
+                    poly_modulus_degree=encryption_degree,
+                    bit_scale=encryption_scale
+                )
+                logger.info(f"Tensor encryption initialized successfully with degree={encryption_degree}, scale={encryption_scale}")
+            except Exception as e:
+                logger.error(f"Failed to initialize encryption: {e}", exc_info=True)
+                # Continue without encryption
+                logger.warning("Continuing without encryption due to initialization failure")
+        else:
+            logger.info("Tensor encryption is disabled")
+
         # Setup network client for tensor sharing with the server
         try:
             logger.info(f"Creating network client to connect to {host}:{port}")
+            # Pass encryption to network client if available
             self.network_client = create_network_client(
-                config=self.config, host=host, port=port
+                config=self.config, 
+                host=host, 
+                port=port,
+                encryption=self.encryption
             )
             logger.info("Network client created successfully")
         except Exception as e:
@@ -66,8 +111,15 @@ class NetworkedExperiment(BaseExperiment):
             logger.info(
                 f"Initializing data compression with config: {compression_config}"
             )
-            self.compress_data = DataCompression(compression_config)
-            logger.info("Data compression initialized successfully")
+            # Pass encryption to DataCompression if available
+            self.compress_data = DataCompression(
+                compression_config,
+                encryption=self.encryption
+            )
+            if self.encryption:
+                logger.info("Data compression with encryption initialized successfully")
+            else:
+                logger.info("Data compression without encryption initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize data compression: {e}", exc_info=True)
             raise

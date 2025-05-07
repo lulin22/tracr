@@ -2,109 +2,130 @@
 Tensor encryption utilities for secure split computing.
 
 This module provides encryption/decryption capabilities for tensor data
-to ensure secure transmission in untrusted networks.
-
-IMPORTANT: This is a placeholder module with a skeleton implementation.
-Actual encryption functionality will be implemented in a future version.
+to ensure secure transmission in untrusted networks. It implements homomorphic
+encryption using TenSEAL's CKKS scheme to allow computation on encrypted data.
 """
 
 import os
 import logging
-from typing import Tuple, Optional, Dict
+import pickle
+from typing import Tuple, Optional, Dict, Any, Union, List
+import torch
+import numpy as np
 
-# This would be replaced with an actual cryptography library in the future
-# from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-# from cryptography.hazmat.primitives import hashes
-# from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+# Import cryptography libraries for key handling
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+# Import TenSEAL for homomorphic encryption
+try:
+    import tenseal as ts
+    TENSEAL_AVAILABLE = True
+except ImportError:
+    TENSEAL_AVAILABLE = False
+    
 logger = logging.getLogger("split_computing_logger")
 
 
 class EncryptionError(Exception):
     """Base exception for encryption-related errors."""
-
     pass
 
 
 class DecryptionError(EncryptionError):
     """Exception raised when tensor decryption fails."""
-
     pass
 
 
 class KeyManagementError(EncryptionError):
     """Exception raised when key management operations fail."""
-
     pass
 
 
-class TensorEncryption:
+class HomomorphicEncryption:
     """
-    Handles encryption and decryption of tensor data for secure transmission.
+    Handles homomorphic encryption and decryption of tensor data for secure transmission.
 
     This class provides a framework for securing tensor data during transmission
     between client and server in split computing architectures. It implements
-    symmetric encryption (AES-GCM) which balances security and performance
-    requirements for neural network tensor transmission.
-
-    Note: This is a placeholder implementation. Actual encryption will be
-    implemented in a future version.
+    homomorphic encryption (CKKS) which allows for computation on encrypted data.
     """
 
     def __init__(
-        self, encryption_key: Optional[bytes] = None, salt: Optional[bytes] = None
+        self, 
+        context: Optional[ts.Context] = None,
+        poly_modulus_degree: int = 8192,
+        coeff_mod_bit_sizes: Optional[List[int]] = None,
+        global_scale: Optional[int] = None,
+        salt: Optional[bytes] = None
     ):
         """
-        Initialize the encryption module with a key or generate a new one.
+        Initialize the homomorphic encryption module with a TenSEAL context.
 
         Args:
-            encryption_key: Optional 32-byte key for AES-256-GCM encryption.
-                            If not provided, a random key will be generated.
+            context: Optional pre-configured TenSEAL context. If not provided, 
+                    a new context will be created with the provided parameters.
+            poly_modulus_degree: Polynomial modulus degree (power of 2) for CKKS scheme.
+            coeff_mod_bit_sizes: List of bit sizes for coefficient modulus.
+            global_scale: Scale to be used for encoding.
             salt: Optional salt for key derivation if using a password.
-                  If not provided, a random salt will be generated.
         """
-        self.encryption_ready = False
-
-        # Generate or store encryption key
-        if encryption_key is None:
-            # In real implementation, this would generate a secure random key
-            self.encryption_key = os.urandom(32)  # 256-bit key
-            logger.info("Generated new random encryption key")
-        else:
-            # Validate key length
-            if len(encryption_key) != 32:
-                logger.warning(
-                    f"Invalid key length: {len(encryption_key)}. Expected 32 bytes for AES-256."
-                )
-                raise KeyManagementError("Encryption key must be 32 bytes for AES-256")
-            self.encryption_key = encryption_key
-            logger.info("Using provided encryption key")
-
+        if not TENSEAL_AVAILABLE:
+            raise ImportError("TenSEAL is not available. Please install it with 'pip install tenseal'")
+        
         # Store or generate salt for password-based key derivation
         self.salt = salt if salt is not None else os.urandom(16)
+        
+        self.encryption_ready = True
 
-        # In real implementation, this would initialize the cipher
-        # self.cipher = AESGCM(self.encryption_key)
-
-        logger.warning(
-            "TensorEncryption is a placeholder. Actual encryption not implemented."
-        )
-
+        if context is not None:
+            # Use provided context
+            self.context = context
+            logger.info("Using provided TenSEAL context")
+        else:
+            # Create default context if not provided
+            if coeff_mod_bit_sizes is None:
+                # Default coefficient modulus bit sizes for CKKS
+                bits_scale = 26
+                coeff_mod_bit_sizes = [31, bits_scale, bits_scale, bits_scale, bits_scale, bits_scale, bits_scale, 31]
+            
+            # Create a new context with the CKKS scheme
+            self.context = ts.context(
+                ts.SCHEME_TYPE.CKKS,
+                poly_modulus_degree=poly_modulus_degree,
+                coeff_mod_bit_sizes=coeff_mod_bit_sizes
+            )
+            
+            # Set the global scale if provided
+            if global_scale is not None:
+                self.context.global_scale = global_scale
+            else:
+                self.context.global_scale = 2**26  # Default scale
+            
+            # Generate Galois keys for vector rotation operations
+            self.context.generate_galois_keys()
+            
+            logger.info(f"Created new TenSEAL context with poly_modulus_degree={poly_modulus_degree}")
+    
     @classmethod
     def from_password(
-        cls, password: str, salt: Optional[bytes] = None
-    ) -> "TensorEncryption":
+        cls, 
+        password: str, 
+        salt: Optional[bytes] = None,
+        poly_modulus_degree: int = 8192
+    ) -> "HomomorphicEncryption":
         """
         Create an encryption instance from a password string.
 
-        This method derives a cryptographic key from a password using PBKDF2.
+        This method derives parameters from a password using PBKDF2.
 
         Args:
             password: Password string to derive key from
             salt: Optional salt bytes for key derivation
+            poly_modulus_degree: Polynomial modulus degree to use
 
         Returns:
-            Configured TensorEncryption instance
+            Configured HomomorphicEncryption instance
 
         Raises:
             KeyManagementError: If key derivation fails
@@ -113,96 +134,165 @@ class TensorEncryption:
             salt = os.urandom(16)
 
         try:
-            # In real implementation, this would derive a key using PBKDF2
-            # kdf = PBKDF2HMAC(
-            #     algorithm=hashes.SHA256(),
-            #     length=32,
-            #     salt=salt,
-            #     iterations=100000,
-            # )
-            # key = kdf.derive(password.encode())
-
-            # For now, just create a placeholder key (not secure!)
-            key = (password.encode() * 8)[:32]
-
-            return cls(encryption_key=key, salt=salt)
+            # Derive parameters using PBKDF2
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=100000,
+            )
+            key_bytes = kdf.derive(password.encode())
+            
+            # Use the derived key to seed the coefficient modulus bit sizes
+            seed = int.from_bytes(key_bytes[:4], byteorder='big')
+            np.random.seed(seed)
+            
+            # Scale factor based on part of the key
+            scale_factor = int.from_bytes(key_bytes[4:8], byteorder='big') % 10 + 20
+            
+            # Generate coefficient modulus bit sizes
+            bits_scale = scale_factor
+            coeff_mod_bit_sizes = [31]
+            # Add a variable number of bit sizes based on the key
+            num_scales = (int.from_bytes(key_bytes[8:12], byteorder='big') % 5) + 3
+            for _ in range(num_scales):
+                coeff_mod_bit_sizes.append(bits_scale)
+            coeff_mod_bit_sizes.append(31)
+            
+            # Create context
+            context = ts.context(
+                ts.SCHEME_TYPE.CKKS,
+                poly_modulus_degree=poly_modulus_degree,
+                coeff_mod_bit_sizes=coeff_mod_bit_sizes
+            )
+            context.global_scale = 2**bits_scale
+            context.generate_galois_keys()
+            
+            return cls(context=context, salt=salt)
         except Exception as e:
             logger.error(f"Key derivation failed: {e}")
-            raise KeyManagementError(f"Failed to derive key from password: {e}")
+            raise KeyManagementError(f"Failed to derive encryption parameters from password: {e}")
 
-    def encrypt(self, data: bytes) -> Tuple[bytes, bytes]:
+    def encrypt(self, data: Union[bytes, np.ndarray, torch.Tensor]) -> Tuple[bytes, dict]:
         """
-        Encrypt tensor data using AES-256-GCM.
+        Encrypt tensor data using CKKS homomorphic encryption.
 
-        In the future implementation, this will:
-        1. Generate a unique nonce for this encryption operation
-        2. Encrypt the data using authenticated encryption (AES-GCM)
-        3. Return the encrypted data and nonce
+        This method:
+        1. Converts the input to a format suitable for homomorphic encryption
+        2. Encrypts the data using the TenSEAL context
+        3. Serializes the encrypted data for transmission
 
         Args:
-            data: Raw tensor data to encrypt
+            data: Tensor data to encrypt (bytes, numpy array, or PyTorch tensor)
 
         Returns:
-            Tuple of (encrypted_data, nonce)
+            Tuple of (encrypted_data_bytes, encryption_metadata)
 
         Raises:
             EncryptionError: If encryption fails
         """
         try:
-            # Generate a unique nonce for this encryption
-            nonce = os.urandom(12)
-
-            # In real implementation, this would encrypt the data
-            # encrypted_data = self.cipher.encrypt(nonce, data, None)
-
-            # For now, just return the original data with a placeholder (NOT SECURE!)
-            # This is a PLACEHOLDER - no actual encryption is performed
-            logger.warning(
-                "Using placeholder encryption - NO ACTUAL ENCRYPTION IS PERFORMED"
-            )
-            encrypted_data = data
-
-            return encrypted_data, nonce
+            # Convert input data to the appropriate format
+            if isinstance(data, bytes):
+                # If data is already bytes, deserialize it to get the tensor
+                tensor_data = pickle.loads(data)
+                if isinstance(tensor_data, torch.Tensor):
+                    # Convert PyTorch tensor to numpy array
+                    numpy_data = tensor_data.detach().cpu().numpy()
+                elif isinstance(tensor_data, np.ndarray):
+                    numpy_data = tensor_data
+                else:
+                    numpy_data = np.frombuffer(data, dtype=np.float32)
+            elif isinstance(data, torch.Tensor):
+                # Convert PyTorch tensor to numpy array
+                numpy_data = data.detach().cpu().numpy()
+            elif isinstance(data, np.ndarray):
+                numpy_data = data
+            else:
+                raise EncryptionError(f"Unsupported data type for encryption: {type(data)}")
+            
+            # Flatten the array for encryption
+            flat_data = numpy_data.flatten().tolist()
+            
+            # Encrypt the flattened data
+            enc_vector = ts.ckks_vector(self.context, flat_data)
+            
+            # Serialize the encrypted vector for transmission
+            encrypted_data = enc_vector.serialize()
+            
+            # Save metadata for proper decryption and reshaping
+            metadata = {
+                "shape": numpy_data.shape,
+                "dtype": str(numpy_data.dtype)
+            }
+            
+            return encrypted_data, metadata
         except Exception as e:
             logger.error(f"Encryption failed: {e}")
             raise EncryptionError(f"Failed to encrypt tensor data: {e}")
 
-    def decrypt(self, encrypted_data: bytes, nonce: bytes) -> bytes:
+    def decrypt(self, encrypted_data: bytes, metadata: dict) -> bytes:
         """
-        Decrypt encrypted tensor data.
+        Decrypt homomorphically encrypted tensor data.
 
-        In the future implementation, this will:
-        1. Use the provided nonce and stored key to decrypt the data
-        2. Verify the authentication tag to ensure data integrity
-        3. Return the decrypted tensor data
+        This method:
+        1. Deserializes the encrypted data
+        2. Decrypts the data using the TenSEAL context
+        3. Reshapes the decrypted data according to the metadata
+        4. Returns the decrypted tensor as serialized bytes
 
         Args:
-            encrypted_data: Encrypted tensor data
-            nonce: Nonce used during encryption
+            encrypted_data: Serialized encrypted tensor data
+            metadata: Dictionary containing shape and dtype information
 
         Returns:
-            Decrypted tensor data
+            Decrypted tensor data as pickled bytes
 
         Raises:
             DecryptionError: If decryption fails
         """
         try:
-            # In real implementation, this would decrypt the data
-            # return self.cipher.decrypt(nonce, encrypted_data, None)
-
-            # For now, just return the original data (NOT SECURE!)
-            # This is a PLACEHOLDER - no actual decryption is performed
-            logger.warning(
-                "Using placeholder decryption - NO ACTUAL DECRYPTION IS PERFORMED"
-            )
-            return encrypted_data
+            # Deserialize the encrypted vector
+            enc_vector = ts.ckks_vector_from(self.context, encrypted_data)
+            
+            # Decrypt the vector
+            decrypted_data = enc_vector.decrypt()
+            
+            # Reshape the data according to metadata
+            shape = metadata.get("shape", None)
+            dtype_str = metadata.get("dtype", "float32")
+            
+            # Convert dtype string back to numpy dtype
+            dtype = np.dtype(dtype_str)
+            
+            if shape:
+                # Reshape the decrypted data
+                numpy_array = np.array(decrypted_data, dtype=dtype).reshape(shape)
+            else:
+                numpy_array = np.array(decrypted_data, dtype=dtype)
+            
+            # Convert back to PyTorch tensor if needed
+            tensor = torch.from_numpy(numpy_array)
+            
+            # Serialize the tensor for consistency with the compression pipeline
+            return pickle.dumps(tensor)
         except Exception as e:
             logger.error(f"Decryption failed: {e}")
             raise DecryptionError(f"Failed to decrypt tensor data: {e}")
 
-    def get_key(self) -> bytes:
-        """Return the encryption key for storage or transmission."""
-        return self.encryption_key
+    def get_context(self) -> ts.Context:
+        """Return the TenSEAL context for serialization or transmission."""
+        return self.context
+
+    def serialize_context(self) -> bytes:
+        """Serialize the context for transmission."""
+        return self.context.serialize()
+    
+    @classmethod
+    def from_serialized_context(cls, serialized_context: bytes) -> "HomomorphicEncryption":
+        """Create a HomomorphicEncryption instance from a serialized context."""
+        context = ts.context_from(serialized_context)
+        return cls(context=context)
 
     def get_salt(self) -> bytes:
         """Return the salt used for key derivation."""
@@ -213,9 +303,8 @@ class KeyManager:
     """
     Manages encryption keys for secure tensor transmission.
 
-    This class handles key generation, storage, rotation, and exchange
-    between client and server components. This is a more advanced key
-    management solution that would be implemented in future versions.
+    This class handles context generation, storage, and exchange
+    between client and server components.
     """
 
     def __init__(self, key_directory: Optional[str] = None):
@@ -226,126 +315,159 @@ class KeyManager:
             key_directory: Directory to store key files (optional)
         """
         self.key_directory = key_directory
-        self.active_keys: Dict[str, bytes] = {}
+        self.active_contexts: Dict[str, ts.Context] = {}
 
-        logger.warning("KeyManager is a placeholder. Functionality not implemented.")
-
-    def generate_key(self, key_id: str) -> bytes:
+    def generate_context(self, 
+                         key_id: str, 
+                         poly_modulus_degree: int = 8192,
+                         bit_scale: int = 26) -> ts.Context:
         """
-        Generate a new random encryption key with the given ID.
+        Generate a new TenSEAL context with the given ID.
 
         Args:
-            key_id: Identifier for the generated key
+            key_id: Identifier for the generated context
+            poly_modulus_degree: Polynomial modulus degree (power of 2)
+            bit_scale: Bit scale for encoding precision
 
         Returns:
-            The generated key bytes
+            The generated TenSEAL context
         """
-        # Generate a new random key
-        key = os.urandom(32)  # 256-bit key
+        # Configure coefficient modulus bit sizes
+        coeff_mod_bit_sizes = [31, bit_scale, bit_scale, bit_scale, bit_scale, bit_scale, bit_scale, 31]
+        
+        # Create a new context
+        context = ts.context(
+            ts.SCHEME_TYPE.CKKS,
+            poly_modulus_degree=poly_modulus_degree,
+            coeff_mod_bit_sizes=coeff_mod_bit_sizes
+        )
+        context.global_scale = 2**bit_scale
+        context.generate_galois_keys()
 
-        # Store the key in memory
-        self.active_keys[key_id] = key
+        # Store the context in memory
+        self.active_contexts[key_id] = context
 
-        # In future implementation, this would securely store the key
-        return key
+        return context
 
-    def load_key(self, key_path: str) -> bytes:
+    def load_context(self, key_path: str) -> ts.Context:
         """
-        Load key from secure storage.
+        Load TenSEAL context from secure storage.
 
         Args:
-            key_path: Path to the key file
+            key_path: Path to the serialized context file
 
         Returns:
-            The loaded key bytes
+            The loaded TenSEAL context
 
         Raises:
-            KeyManagementError: If key loading fails
+            KeyManagementError: If context loading fails
         """
         try:
-            # This is a placeholder - in a real implementation,
-            # keys would be loaded from secure storage
-            logger.warning(f"Key loading from {key_path} not implemented")
-            return os.urandom(32)  # Return a dummy key
+            # Load the serialized context from file
+            with open(key_path, 'rb') as key_file:
+                serialized_context = key_file.read()
+                
+            # Deserialize the context
+            context = ts.context_from(serialized_context)
+            return context
         except Exception as e:
-            raise KeyManagementError(f"Failed to load key from {key_path}: {e}")
+            raise KeyManagementError(f"Failed to load context from {key_path}: {e}")
 
-    def secure_key_exchange(self, remote_address: str, port: int) -> bytes:
+    def save_context(self, key_id: str, key_path: str) -> None:
         """
-        Perform secure key exchange with a remote server.
-
-        This would implement a protocol like Diffie-Hellman key exchange
-        to securely establish a shared key between client and server.
+        Save a TenSEAL context to secure storage.
 
         Args:
-            remote_address: Address of the remote server
-            port: Port for key exchange
-
-        Returns:
-            The exchanged shared secret key
+            key_id: Identifier for the context to save
+            key_path: Path where the context should be saved
 
         Raises:
-            KeyManagementError: If key exchange fails
+            KeyManagementError: If context saving fails
         """
-        # This is a placeholder for future implementation
-        # In real implementation, this would use asymmetric cryptography
-        # to securely exchange a symmetric key
-        logger.warning(
-            f"Secure key exchange with {remote_address}:{port} not implemented"
-        )
-        return os.urandom(32)  # Return a dummy key
-
-    def rotate_keys(self, retention_period: int = 90) -> None:
-        """
-        Rotate encryption keys and archive old keys.
-
-        Args:
-            retention_period: Number of days to retain old keys
-        """
-        # This is a placeholder for future implementation
-        # In real implementation, this would generate new keys
-        # and securely archive old ones
-        logger.warning("Key rotation not implemented")
+        try:
+            if key_id not in self.active_contexts:
+                raise KeyManagementError(f"Context ID {key_id} not found")
+                
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(key_path), exist_ok=True)
+            
+            # Serialize and save the context with restricted permissions
+            with open(key_path, 'wb') as key_file:
+                key_file.write(self.active_contexts[key_id].serialize())
+                
+            # Set appropriate permissions (POSIX systems only)
+            try:
+                os.chmod(key_path, 0o600)  # Only owner can read/write
+            except:
+                logger.warning(f"Could not set file permissions on {key_path}")
+                
+        except Exception as e:
+            raise KeyManagementError(f"Failed to save context to {key_path}: {e}")
 
 
 def create_encryption(
     password: Optional[str] = None,
     key_file: Optional[str] = None,
-    generate_key: bool = False,
-) -> TensorEncryption:
+    generate_new: bool = False,
+    poly_modulus_degree: int = 8192,
+    bit_scale: int = 26
+) -> HomomorphicEncryption:
     """
-    Factory function to create a configured TensorEncryption instance.
+    Factory function to create a configured HomomorphicEncryption instance.
 
     Args:
-        password: Optional password to derive encryption key from
-        key_file: Optional path to load key from
-        generate_key: Whether to generate a new random key
+        password: Optional password to derive encryption parameters from
+        key_file: Optional path to load serialized context from
+        generate_new: Whether to generate a new random context
+        poly_modulus_degree: Polynomial modulus degree for new contexts
+        bit_scale: Bit scale for encoding precision
 
     Returns:
-        Configured TensorEncryption instance
+        Configured HomomorphicEncryption instance
 
     Raises:
-        KeyManagementError: If key creation fails
+        KeyManagementError: If encryption creation fails
     """
+    if not TENSEAL_AVAILABLE:
+        raise ImportError("TenSEAL is not available. Please install it with 'pip install tenseal'")
+        
     try:
         if password:
-            logger.info("Creating encryption from password")
-            return TensorEncryption.from_password(password)
+            logger.info("Creating homomorphic encryption from password")
+            return HomomorphicEncryption.from_password(
+                password, 
+                poly_modulus_degree=poly_modulus_degree
+            )
 
         if key_file:
-            logger.info(f"Loading encryption key from {key_file}")
-            # In real implementation, this would load the key from file
-            key = os.urandom(32)  # Placeholder
-            return TensorEncryption(encryption_key=key)
+            logger.info(f"Loading encryption context from {key_file}")
+            key_manager = KeyManager()
+            context = key_manager.load_context(key_file)
+            return HomomorphicEncryption(context=context)
 
-        if generate_key:
-            logger.info("Generating new random encryption key")
-            return TensorEncryption()
+        if generate_new:
+            logger.info("Generating new random encryption context")
+            # Configure coefficient modulus bit sizes
+            coeff_mod_bit_sizes = [31, bit_scale, bit_scale, bit_scale, bit_scale, bit_scale, bit_scale, 31]
+            
+            # Create context with specified parameters
+            context = ts.context(
+                ts.SCHEME_TYPE.CKKS,
+                poly_modulus_degree=poly_modulus_degree,
+                coeff_mod_bit_sizes=coeff_mod_bit_sizes
+            )
+            context.global_scale = 2**bit_scale
+            context.generate_galois_keys()
+            
+            return HomomorphicEncryption(context=context)
 
         # Default case
-        logger.warning("Creating encryption with default settings")
-        return TensorEncryption()
+        logger.info("Creating encryption with default settings")
+        return HomomorphicEncryption()
 
     except Exception as e:
         logger.error(f"Failed to create encryption: {e}")
         raise KeyManagementError(f"Failed to create encryption: {e}")
+
+# Alias for backward compatibility
+TensorEncryption = HomomorphicEncryption

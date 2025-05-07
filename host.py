@@ -51,6 +51,36 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Copy results to the server after experiment",
     )
+    
+    # Add encryption options
+    encryption_group = parser.add_argument_group('Encryption Options')
+    encryption_group.add_argument(
+        "--encrypt",
+        action="store_true",
+        help="Enable tensor encryption for secure transmission",
+    )
+    encryption_group.add_argument(
+        "--encryption-key-file",
+        type=str,
+        help="Path to encryption key file",
+    )
+    encryption_group.add_argument(
+        "--encryption-password",
+        type=str,
+        help="Password for encryption (alternative to key file)",
+    )
+    encryption_group.add_argument(
+        "--encryption-degree",
+        type=int,
+        default=8192,
+        help="Polynomial modulus degree for encryption (default: 8192)",
+    )
+    encryption_group.add_argument(
+        "--encryption-scale",
+        type=int,
+        default=26,
+        help="Bit scale for encryption precision (default: 26)",
+    )
 
     return parser.parse_args()
 
@@ -67,13 +97,22 @@ class ExperimentHost:
     5. Running the experiment and handling results
     """
 
-    def __init__(self, config_path: str) -> None:
-        """Initialize the experiment host with specified configuration."""
+    def __init__(self, config_path: str, encryption_args=None) -> None:
+        """
+        Initialize the experiment host with specified configuration.
+        
+        Args:
+            config_path: Path to the configuration file
+            encryption_args: Optional dictionary with encryption parameters
+        """
         self.results_copied = False
         self.logging_server_started = False
         self.config = read_yaml_file(config_path)
         if not self.config:
             raise ValueError(f"Failed to load configuration from {config_path}")
+            
+        # Store encryption settings
+        self.encryption_args = encryption_args or {}
 
         self._setup_logging()
         self.device_mgr = DeviceManager()
@@ -145,9 +184,12 @@ class ExperimentHost:
         logger.info(f"Loaded {len(devices)} device(s)")
 
         for device in devices:
-            logger.info(
-                f"Device: {device.device_type}, Host: {device.get_host()}, Port: {device.get_port()}, Reachable: {device.is_reachable()}"
-            )
+            if device.is_reachable():
+                logger.info(
+                    f"Device: {device.device_type}, Host: {device.get_host()}, Port: {device.get_port()}, Reachable: {device.is_reachable()}"
+                )
+            else:
+                logger.warning(f"Device: {device.device_type} is not reachable")
 
         # Check specifically for SERVER device using both the enum and string
         server_device = self.device_mgr.get_device_by_type(DeviceType.SERVER)
@@ -158,12 +200,13 @@ class ExperimentHost:
                 logger.info("SERVER device found using string name 'SERVER'")
 
         if server_device:
-            logger.info(
-                f"SERVER device found: {server_device.get_host()}:{server_device.get_port()}"
-            )
-            # Test if it's truly reachable
-            is_reachable = server_device.is_reachable()
-            logger.info(f"SERVER is reachable: {is_reachable}")
+            if server_device.is_reachable():
+                logger.info(
+                    f"SERVER device found: {server_device.get_host()}:{server_device.get_port()}"
+                )
+                logger.info(f"SERVER is reachable: True")
+            else:
+                logger.warning("SERVER device found but is not reachable")
         else:
             logger.warning("No SERVER device found in configuration")
 
@@ -225,8 +268,50 @@ class ExperimentHost:
                 raise ValueError(
                     "Networked experiment requires a server device with host"
                 )
-
-            self.experiment = NetworkedExperiment(self.config, host, port)
+                
+            # First check for encryption settings in the config file
+            config_encryption = self.config.get("encryption", {})
+            
+            # Get settings from config or use defaults
+            config_enabled = config_encryption.get("enabled", False)
+            config_password = config_encryption.get("password")
+            config_key_file = config_encryption.get("key_file")
+            config_degree = config_encryption.get("degree", 8192)
+            config_scale = config_encryption.get("scale", 26)
+            
+            # Command-line args override config settings if specified
+            encryption_enabled = self.encryption_args.get('encrypt', config_enabled)
+            encryption_password = self.encryption_args.get('encryption_password', config_password)
+            encryption_key_file = self.encryption_args.get('encryption_key_file', config_key_file)
+            encryption_degree = self.encryption_args.get('encryption_degree', config_degree)
+            encryption_scale = self.encryption_args.get('encryption_scale', config_scale)
+            
+            # Log encryption settings
+            if encryption_enabled:
+                if encryption_password:
+                    logger.info("Using password-based encryption from config")
+                elif encryption_key_file:
+                    logger.info(f"Using encryption key file from config: {encryption_key_file}")
+                else:
+                    logger.info("Using server-generated encryption")
+                    
+                logger.info(f"Encryption parameters: degree={encryption_degree}, scale={encryption_scale}")
+                
+                # Initialize with encryption enabled
+                self.experiment = NetworkedExperiment(
+                    self.config, 
+                    host, 
+                    port, 
+                    encryption_password=encryption_password,
+                    encryption_key_file=encryption_key_file,
+                    encryption_degree=encryption_degree,
+                    encryption_scale=encryption_scale
+                )
+            else:
+                # Initialize without encryption
+                logger.info("Encryption is disabled")
+                self.experiment = NetworkedExperiment(self.config, host, port)
+                
             logger.info("Using networked experiment mode")
         else:
             raise ValueError(f"Unsupported experiment type: {exp_type}")
@@ -471,8 +556,49 @@ def main() -> None:
         if "type" not in config["experiment"]:
             config["experiment"]["type"] = "networked"
             print("Setting experiment type to 'networked'")
+            
+        # Collect encryption arguments
+        encryption_args = {
+            'encrypt': args.encrypt,
+            'encryption_password': args.encryption_password,
+            'encryption_key_file': args.encryption_key_file,
+            'encryption_degree': args.encryption_degree,
+            'encryption_scale': args.encryption_scale
+        }
+        
+        # Get encryption settings from config
+        config_encryption = config.get("encryption", {})
+        config_enabled = config_encryption.get("enabled", False)
+        
+        # Print encryption status
+        print("\n=== Encryption Settings ===")
+        print(f"Config file encryption enabled: {config_enabled}")
+        print(f"Command-line encryption flag: {args.encrypt}")
+        
+        # Effective setting (command-line overrides config)
+        effective_enabled = args.encrypt if args.encrypt is not None else config_enabled
+        print(f"Effective setting: {'ENABLED' if effective_enabled else 'DISABLED'}")
+        
+        if effective_enabled:
+            # Determine which encryption method is being used
+            if args.encryption_password:
+                print("Using password-based encryption (from command line)")
+            elif args.encryption_key_file:
+                print(f"Using encryption key file: {args.encryption_key_file} (from command line)")
+            elif config_encryption.get("password"):
+                print("Using password-based encryption (from config file)")
+            elif config_encryption.get("key_file"):
+                print(f"Using encryption key file: {config_encryption.get('key_file')} (from config file)")
+            else:
+                print("Using server-generated encryption")
+            
+            # Show encryption parameters
+            degree = args.encryption_degree or config_encryption.get("degree", 8192)
+            scale = args.encryption_scale or config_encryption.get("scale", 26)
+            print(f"Encryption parameters: degree={degree}, scale={scale}")
+        print("===========================\n")
 
-        host = ExperimentHost(str(config_path))
+        host = ExperimentHost(str(config_path), encryption_args=encryption_args)
 
         print("Starting experiment...")
         host.run_experiment()

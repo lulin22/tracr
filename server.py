@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Any, Dict, Generator
+import os
 
 import torch
 
@@ -49,7 +50,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 # Start logging server
-logging_server = start_logging_server(device=DeviceType.SERVER, config=DEFAULT_CONFIG)
+logging_server = start_logging_server(
+    device=DeviceType.SERVER, 
+    config=DEFAULT_CONFIG,
+    find_free_port=True  # Try to find a free port if the default is in use
+)
 logger = logging.getLogger("split_computing_logger")
 
 
@@ -94,9 +99,27 @@ class Server:
     """
 
     def __init__(
-        self, local_mode: bool = False, config_path: Optional[str] = None
+        self, 
+        local_mode: bool = False, 
+        config_path: Optional[str] = None,
+        enable_encryption: bool = False,
+        encryption_key_file: Optional[str] = None,
+        encryption_password: Optional[str] = None,
+        encryption_degree: int = 8192,
+        encryption_scale: int = 26
     ) -> None:
-        """Initialize the Server with specified mode and configuration."""
+        """
+        Initialize the Server with specified mode and configuration.
+        
+        Args:
+            local_mode: Whether to run in local mode (True) or networked mode (False)
+            config_path: Path to configuration file
+            enable_encryption: Whether to enable encryption
+            encryption_key_file: Path to encryption key file
+            encryption_password: Password for encryption
+            encryption_degree: Polynomial modulus degree for encryption
+            encryption_scale: Bit scale for encryption precision
+        """
         self.device_manager = DeviceManager()
         self.experiment_manager: Optional[ExperimentManager] = None
         self.server_socket: Optional[socket.socket] = None
@@ -104,6 +127,13 @@ class Server:
         self.config_path = config_path
         self.metrics = ServerMetrics()
         self.compress_data: Optional[DataCompression] = None
+        
+        # Store encryption settings
+        self.enable_encryption = enable_encryption
+        self.encryption_key_file = encryption_key_file
+        self.encryption_password = encryption_password
+        self.encryption_degree = encryption_degree
+        self.encryption_scale = encryption_scale
 
         self._load_config_and_setup_device()
         # Setup compression if in networked mode
@@ -121,10 +151,81 @@ class Server:
         self.config = read_yaml_file(self.config_path)
         requested_device = self.config.get("default", {}).get("device", "cuda")
         self.config["default"]["device"] = get_device(requested_device)
+        
+        # Check for encryption settings in the config file if not provided via command line
+        if not self.enable_encryption:
+            config_encryption = self.config.get("encryption", {})
+            self.enable_encryption = config_encryption.get("enabled", False)
+            
+            # Only use config encryption settings if not provided via command line
+            if self.enable_encryption:
+                if not self.encryption_key_file:
+                    self.encryption_key_file = config_encryption.get("key_file")
+                
+                if not self.encryption_password:
+                    self.encryption_password = config_encryption.get("password")
+                    
+                if self.encryption_degree == 8192:  # Using default value
+                    self.encryption_degree = config_encryption.get("degree", 8192)
+                    
+                if self.encryption_scale == 26:  # Using default value
+                    self.encryption_scale = config_encryption.get("scale", 26)
+                    
+                logger.info("Encryption settings loaded from config file")
 
     def _setup_compression(self) -> None:
         """Initialize compression with minimal settings for optimal performance."""
         self.compress_data = DataCompression(SERVER_COMPRESSION_SETTINGS)
+        
+        # Check for homomorphic encryption configuration
+        self.encryption = None
+        
+        try:
+            from src.api.network.encryption import HomomorphicEncryption, create_encryption
+            
+            # Check if encryption was explicitly enabled via command line
+            if self.enable_encryption:
+                if self.encryption_key_file:
+                    # Use specified key file from command line
+                    logger.info(f"Using encryption key file: {self.encryption_key_file}")
+                    self.encryption = create_encryption(
+                        key_file=self.encryption_key_file,
+                        poly_modulus_degree=self.encryption_degree,
+                        bit_scale=self.encryption_scale
+                    )
+                elif self.encryption_password:
+                    # Use specified password from command line
+                    logger.info("Using encryption with password")
+                    self.encryption = create_encryption(
+                        password=self.encryption_password,
+                        poly_modulus_degree=self.encryption_degree,
+                        bit_scale=self.encryption_scale
+                    )
+                else:
+                    # Generate new encryption key if no specific method provided
+                    logger.info("Generating new encryption context")
+                    self.encryption = create_encryption(
+                        generate_new=True,
+                        poly_modulus_degree=self.encryption_degree,
+                        bit_scale=self.encryption_scale
+                    )
+            # Fallback to environment variable if not explicitly enabled
+            elif os.environ.get("SPLIT_COMPUTE_ENCRYPTION_KEY"):
+                encryption_key_file = os.environ.get("SPLIT_COMPUTE_ENCRYPTION_KEY")
+                if os.path.exists(encryption_key_file):
+                    logger.info(f"Using encryption key from environment: {encryption_key_file}")
+                    self.encryption = create_encryption(key_file=encryption_key_file)
+            
+            # Update compression with encryption if available
+            if self.encryption:
+                self.compress_data = DataCompression(
+                    SERVER_COMPRESSION_SETTINGS, 
+                    encryption=self.encryption
+                )
+                logger.info("Homomorphic encryption enabled for secure tensor processing")
+        except Exception as e:
+            logger.error(f"Failed to initialize encryption: {e}")
+        
         logger.debug("Initialized compression with minimal settings")
 
     def start(self) -> None:
@@ -354,6 +455,24 @@ class Server:
             try:
                 config = pickle.loads(config_data)
                 logger.debug(f"Successfully received and parsed configuration")
+                
+                # Check for encryption context in configuration
+                if "encryption" in config and isinstance(config["encryption"], dict):
+                    encryption_config = config["encryption"]
+                    if "context" in encryption_config:
+                        try:
+                            from src.api.network.encryption import HomomorphicEncryption
+                            serialized_context = encryption_config["context"]
+                            # Create encryption module from received context
+                            self.encryption = HomomorphicEncryption.from_serialized_context(serialized_context)
+                            logger.info("Received homomorphic encryption context from client")
+                            
+                            # Update compression to use encryption
+                            self._update_compression(config)
+                            logger.info("Updated compression with client encryption context")
+                        except Exception as e:
+                            logger.error(f"Failed to initialize encryption from client context: {e}")
+                
                 return config
             except Exception as e:
                 logger.error(f"Failed to deserialize config: {e}")
@@ -565,11 +684,24 @@ class Server:
         """
         if "compression" in config:
             logger.debug(f"Updating compression settings: {config['compression']}")
-            self.compress_data = DataCompression(config["compression"])
+            
+            # Create new compression instance with the received settings
+            if self.encryption:
+                # If we have encryption set up, pass it to the new compression instance
+                self.compress_data = DataCompression(config["compression"], encryption=self.encryption)
+                logger.debug("Updated compression with encryption enabled")
+            else:
+                # Standard compression without encryption
+                self.compress_data = DataCompression(config["compression"])
+                logger.debug("Updated compression without encryption")
         else:
-            logger.warning(
-                "No compression settings in config, keeping minimal settings"
-            )
+            # If no compression settings in config, keep current settings
+            if self.encryption:
+                # But make sure we use the encryption if it's been set up
+                self.compress_data = DataCompression(SERVER_COMPRESSION_SETTINGS, encryption=self.encryption)
+                logger.debug("Keeping minimal compression settings with encryption")
+            else:
+                logger.warning("No compression settings in config, keeping minimal settings without encryption")
 
     def cleanup(self) -> None:
         """
@@ -615,6 +747,37 @@ def parse_arguments() -> argparse.Namespace:
         help="Path to configuration file (required for local mode)",
         required=False,
     )
+    
+    # Add encryption options
+    encryption_group = parser.add_argument_group('Encryption Options')
+    encryption_group.add_argument(
+        "--encrypt",
+        action="store_true",
+        help="Enable tensor encryption for secure transmission",
+    )
+    encryption_group.add_argument(
+        "--encryption-key-file",
+        type=str,
+        help="Path to encryption key file (will override SPLIT_COMPUTE_ENCRYPTION_KEY env var)",
+    )
+    encryption_group.add_argument(
+        "--encryption-password",
+        type=str,
+        help="Password for encryption (alternative to key file)",
+    )
+    encryption_group.add_argument(
+        "--encryption-degree",
+        type=int,
+        default=8192,
+        help="Polynomial modulus degree for encryption (default: 8192)",
+    )
+    encryption_group.add_argument(
+        "--encryption-scale",
+        type=int,
+        default=26,
+        help="Bit scale for encryption precision (default: 26)",
+    )
+    
     args = parser.parse_args()
 
     if args.local and not args.config:
@@ -626,7 +789,16 @@ def parse_arguments() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_arguments()
 
-    server = Server(local_mode=args.local, config_path=args.config)
+    server = Server(
+        local_mode=args.local, 
+        config_path=args.config,
+        enable_encryption=args.encrypt,
+        encryption_key_file=args.encryption_key_file,
+        encryption_password=args.encryption_password,
+        encryption_degree=args.encryption_degree,
+        encryption_scale=args.encryption_scale
+    )
+    
     try:
         server.start()
     except KeyboardInterrupt:
