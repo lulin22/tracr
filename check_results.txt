@@ -1,0 +1,473 @@
+
+hammerhead | swimming trunks
+cock | partridge
+junco | coucal
+kite | hip
+vulture | church
+axolotl | thunder snake
+frog | African chameleon
+loggerhead | snorkel
+whiptail | wolf spider
+chameleon | chiton
+snake | green mamba
+snake | cliff
+snake | red-backed sandpiper
+snake | whiptail
+python | hognose snake
+viper | thunder snake
+spider | bustard
+spider | cliff
+chicken | ptarmigan
+grey | macaw
+coucal | howler monkey
+wallaby | red fox
+jellyfish | toaster
+conch | hermit crab
+lobster | Dungeness crab
+ridgeback | dhole
+bloodhound | bikini
+greyhound | feather boa
+elkhound | Siberian husky
+otterhound | Norfolk terrier
+terrier | Airedale
+Airedale | soft-coated wheaten terrier
+terrier | Bouvier des Flandres
+terrier | borzoi
+Lhasa | French bulldog
+retriever | brown bear
+retriever | hippopotamus
+setter | Brittany spaniel
+schipperke | French bulldog
+sheepdog | polecat
+collie | Australian terrier
+dog | Appenzeller
+Appenzeller | Greater Swiss Mountain dog
+EntleBucher | Walker hound
+Dane | bull mastiff
+dog | Siberian husky
+husky | Bouvier des Flandres
+affenpinscher | Newfoundland
+Samoyed | Angora
+Cardigan | beagle
+poodle | Bouvier des Flandres
+poodle | balance beam
+coyote | timber wolf
+fox | dingo
+fox | dingo
+cat | lynx
+cougar | wallaby
+jaguar | Egyptian cat
+lion | hyena
+grasshopper | tiger beetle
+cockroach | holster
+mantis | grasshopper
+rabbit | hare
+boar | bison
+ox | ram
+hartebeest | impala
+weasel | hippopotamus
+skunk | American black bear
+cat | Komodo dragon
+indri | three-toed sloth
+eel | slug
+sturgeon | German short-haired pointer
+gar | canoe
+abacus | trifle
+accordion | grand piano
+altar | organ
+amphibian | bullet train
+apron | desk
+ashcan | bucket
+ballpoint | fountain pen
+barbershop | laptop
+barometer | guillotine
+towel | lab coat
+bathtub | washbasin
+beaker | pop bottle
+bottle | red wine
+binder | revolver
+boathouse | patio
+bottlecap | buckeye
+bow | warthog
+tie | harp
+breakwater | beacon
+broom | scabbard
+bucket | mountain tent
+cab | power drill
+caldron | barrel
+opener | revolver
+carousel | amphibian
+kit | lawn mower
+player | parking meter
+cello | violin
+telephone | hand-held computer
+saw | lumbermill
+cleaver | butcher shop
+cloak | overskirt
+shaker | beer glass
+coffeepot | beer glass
+keyboard | space bar
+confectionery | grocery store
+crate | file
+Pot | rain barrel
+desk | racer
+computer | screen
+diaper | swimming trunks
+watch | iPod
+dishwasher | shopping basket
+platform | aircraft carrier
+fountain | umbrella
+pen | scabbard
+coat | bannister
+pump | tank
+grille | minivan
+hammer | chain saw
+harp | clog
+hatchet | buckle
+theater | entertainment center
+honeycomb | flatworm
+jinrikisha | bicycle-built-for-two
+joystick | tripod
+kimono | pajama
+laptop | barbershop
+lighter | crossword puzzle
+lotion | puck
+loupe | bubble
+lumbermill | pier
+maillot | purse
+maraca | kimono
+mask | wig
+matchstick | ice lolly
+maze | vault
+microphone | loupe
+can | megalith
+minibus | toaster
+modem | notebook
+monastery | palace
+monitor | scoreboard
+mortar | trilobite
+bike | parachute
+mouse | desktop computer
+nail | hourglass
+brace | iron
+necklace | pencil sharpener
+nipple | plunger
+notebook | tray
+ocarina | toilet seat
+packet | jigsaw puzzle
+paintbrush | teddy
+towel | shower cap
+meter | pay-phone
+sharpener | reflex camera
+perfume | lotion
+pick | Christmas stocking
+fence | altar
+pickup | beach wagon
+bottle | slide rule
+ball | face powder
+planetarium | table lamp
+bag | modem
+rack | crib
+van | recreational vehicle
+poncho | sock
+table | spotlight
+drill | hard disc
+projectile | traffic light
+quill | sliding door
+quilt | centipede
+radiator | washbasin
+radio | military uniform
+revolver | running shoe
+rifle | reflex camera
+saltshaker | lotion
+sandal | banana
+sarong | gown
+sax | bassoon
+schooner | flagpole
+screen | television
+screwdriver | fountain pen
+belt | car mirror
+machine | bicycle-built-for-two
+shop | scale
+cart | catamaran
+curtain | envelope
+dish | crane
+sombrero | cowboy hat
+spatula | mashed potato
+web | garden spider
+sunglasses | sandal
+swab | packet
+sweatshirt | mask
+switch | iron
+syringe | cornet
+television | home theater
+throne | crate
+shop | bell cote
+torch | rotisserie
+truck | limousine
+tricycle | jinrikisha
+umbrella | mitten
+unicycle | jinrikisha
+vase | pot
+velvet | miniskirt
+vestment | lab coat
+wallet | pillow
+bottle | can opener
+jug | coffee mug
+jug | Crock Pot
+screen | swing
+bottle | ski
+wok | Dungeness crab
+spoon | china cabinet
+yurt | Kerry blue terrier
+puzzle | rubber eraser
+trifle | ice cream
+lolly | conch
+artichoke | bell pepper
+banana | common iguana
+carbonara | potpie
+dough | wooden spoon
+wine | magpie
+alp | valley
+bubble | bakery
+lakeside | sandbar
+valley | alp
+corn | cicada
+acorn | gyromitra
+ear | corn
+hammerhead | swimming trunks
+cock | partridge
+junco | coucal
+kite | hip
+vulture | church
+axolotl | thunder snake
+frog | African chameleon
+loggerhead | snorkel
+whiptail | wolf spider
+chameleon | chiton
+snake | green mamba
+snake | cliff
+snake | red-backed sandpiper
+snake | whiptail
+python | hognose snake
+viper | thunder snake
+spider | bustard
+spider | cliff
+chicken | ptarmigan
+grey | macaw
+coucal | howler monkey
+wallaby | red fox
+jellyfish | toaster
+conch | hermit crab
+lobster | Dungeness crab
+ridgeback | dhole
+bloodhound | bikini
+greyhound | feather boa
+elkhound | Siberian husky
+otterhound | Norfolk terrier
+terrier | Airedale
+Airedale | soft-coated wheaten terrier
+terrier | Bouvier des Flandres
+terrier | borzoi
+Lhasa | French bulldog
+retriever | brown bear
+retriever | hippopotamus
+setter | Brittany spaniel
+schipperke | French bulldog
+sheepdog | polecat
+collie | Australian terrier
+dog | Appenzeller
+Appenzeller | Greater Swiss Mountain dog
+EntleBucher | Walker hound
+Dane | bull mastiff
+dog | Siberian husky
+husky | Bouvier des Flandres
+affenpinscher | Newfoundland
+Samoyed | Angora
+Cardigan | beagle
+poodle | Bouvier des Flandres
+poodle | balance beam
+coyote | timber wolf
+fox | dingo
+fox | dingo
+cat | lynx
+cougar | wallaby
+jaguar | Egyptian cat
+lion | hyena
+grasshopper | tiger beetle
+cockroach | holster
+mantis | grasshopper
+rabbit | hare
+boar | bison
+ox | ram
+hartebeest | impala
+weasel | hippopotamus
+skunk | American black bear
+cat | Komodo dragon
+indri | three-toed sloth
+eel | slug
+sturgeon | German short-haired pointer
+gar | canoe
+abacus | trifle
+accordion | grand piano
+altar | organ
+amphibian | bullet train
+apron | desk
+ashcan | bucket
+ballpoint | fountain pen
+barbershop | laptop
+barometer | guillotine
+towel | lab coat
+bathtub | washbasin
+beaker | pop bottle
+bottle | red wine
+binder | revolver
+boathouse | patio
+bottlecap | buckeye
+bow | warthog
+tie | harp
+breakwater | beacon
+broom | scabbard
+bucket | mountain tent
+cab | power drill
+caldron | barrel
+opener | revolver
+carousel | amphibian
+kit | lawn mower
+player | parking meter
+cello | violin
+telephone | hand-held computer
+saw | lumbermill
+cleaver | butcher shop
+cloak | overskirt
+shaker | beer glass
+coffeepot | beer glass
+keyboard | space bar
+confectionery | grocery store
+crate | file
+Pot | rain barrel
+desk | racer
+computer | screen
+diaper | swimming trunks
+watch | iPod
+dishwasher | shopping basket
+platform | aircraft carrier
+fountain | umbrella
+pen | scabbard
+coat | bannister
+pump | tank
+grille | minivan
+hammer | chain saw
+harp | clog
+hatchet | buckle
+theater | entertainment center
+honeycomb | flatworm
+jinrikisha | bicycle-built-for-two
+joystick | tripod
+kimono | pajama
+laptop | barbershop
+lighter | crossword puzzle
+lotion | puck
+loupe | bubble
+lumbermill | pier
+maillot | purse
+maraca | kimono
+mask | wig
+matchstick | ice lolly
+maze | vault
+microphone | loupe
+can | megalith
+minibus | toaster
+modem | notebook
+monastery | palace
+monitor | scoreboard
+mortar | trilobite
+bike | parachute
+mouse | desktop computer
+nail | hourglass
+brace | iron
+necklace | pencil sharpener
+nipple | plunger
+notebook | tray
+ocarina | toilet seat
+packet | jigsaw puzzle
+paintbrush | teddy
+towel | shower cap
+meter | pay-phone
+sharpener | reflex camera
+perfume | lotion
+pick | Christmas stocking
+fence | altar
+pickup | beach wagon
+bottle | slide rule
+ball | face powder
+planetarium | table lamp
+bag | modem
+rack | crib
+van | recreational vehicle
+poncho | sock
+table | spotlight
+drill | hard disc
+projectile | traffic light
+quill | sliding door
+quilt | centipede
+radiator | washbasin
+radio | military uniform
+revolver | running shoe
+rifle | reflex camera
+saltshaker | lotion
+sandal | banana
+sarong | gown
+sax | bassoon
+schooner | flagpole
+screen | television
+screwdriver | fountain pen
+belt | car mirror
+machine | bicycle-built-for-two
+shop | scale
+cart | catamaran
+curtain | envelope
+dish | crane
+sombrero | cowboy hat
+spatula | mashed potato
+web | garden spider
+sunglasses | sandal
+swab | packet
+sweatshirt | mask
+switch | iron
+syringe | cornet
+television | home theater
+throne | crate
+shop | bell cote
+torch | rotisserie
+truck | limousine
+tricycle | jinrikisha
+umbrella | mitten
+unicycle | jinrikisha
+vase | pot
+velvet | miniskirt
+vestment | lab coat
+wallet | pillow
+bottle | can opener
+jug | coffee mug
+jug | Crock Pot
+screen | swing
+bottle | ski
+wok | Dungeness crab
+spoon | china cabinet
+yurt | Kerry blue terrier
+puzzle | rubber eraser
+trifle | ice cream
+lolly | conch
+artichoke | bell pepper
+banana | common iguana
+carbonara | potpie
+dough | wooden spoon
+wine | magpie
+alp | valley
+bubble | bakery
+lakeside | sandbar
+valley | alp
+corn | cicada
+acorn | gyromitra
+ear | corn

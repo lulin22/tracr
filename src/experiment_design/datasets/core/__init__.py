@@ -7,6 +7,7 @@ from .transforms import (
     ImageTransformer,
     NormalizationParams,
     IMAGENET_TRANSFORM,
+    MNIST_TRANSFORM,
     ONION_TRANSFORM,
     MINIMAL_TRANSFORM,
 )
@@ -21,6 +22,7 @@ from .loaders import (
 from .collate_fns import (
     CollateRegistry,
     imagenet_collate,
+    mnist_collate,
     onion_collate,
     default_collate,
     COLLATE_FUNCTIONS,
@@ -52,12 +54,14 @@ __all__ = [
     "ImageTransformer",
     "NormalizationParams",
     "IMAGENET_TRANSFORM",
+    "MNIST_TRANSFORM",
     "ONION_TRANSFORM",
     "MINIMAL_TRANSFORM",
     # Collate functions
     "CollateRegistry",
     "COLLATE_FUNCTIONS",
     "imagenet_collate",
+    "mnist_collate",
     "onion_collate",
     "default_collate",
     # Exception classes

@@ -19,6 +19,7 @@ class TransformType(Enum):
 
     IMAGENET = "imagenet"
     ONION = "onion"
+    MNIST = "mnist"
     MINIMAL = "minimal"
     CUSTOM = "custom"
 
@@ -29,6 +30,10 @@ class NormalizationParams:
     # ImageNet normalization values
     IMAGENET_MEAN = [0.485, 0.456, 0.406]
     IMAGENET_STD = [0.229, 0.224, 0.225]
+
+    # MNIST normalization values (for grayscale images)
+    MNIST_MEAN = [0.1307]  # MNIST mean for single channel
+    MNIST_STD = [0.3081]   # MNIST std for single channel
 
     # Default values for datasets without standard normalization
     DEFAULT_MEAN = [0.5, 0.5, 0.5]
@@ -44,6 +49,8 @@ class NormalizationParams:
 
         if transform_type == TransformType.IMAGENET:
             return cls.IMAGENET_MEAN, cls.IMAGENET_STD
+        elif transform_type == TransformType.MNIST:
+            return cls.MNIST_MEAN, cls.MNIST_STD
         else:
             return cls.DEFAULT_MEAN, cls.DEFAULT_STD
 
@@ -91,6 +98,18 @@ class TransformFactory:
                 T.Normalize(
                     mean=NormalizationParams.IMAGENET_MEAN,
                     std=NormalizationParams.IMAGENET_STD,
+                ),
+            ]
+        )
+
+        # MNIST standard preprocessing (keep original 28x28 size)
+        cls.DEFAULT_TRANSFORMS[TransformType.MNIST] = T.Compose(
+            [
+                T.Resize((28, 28)),  # Keep original MNIST size for ConvNet model
+                T.ToTensor(),
+                T.Normalize(
+                    mean=NormalizationParams.MNIST_MEAN,
+                    std=NormalizationParams.MNIST_STD,
                 ),
             ]
         )
@@ -210,5 +229,6 @@ class ImageTransformer:
 
 # Predefined transform instances for common use cases
 IMAGENET_TRANSFORM = TransformFactory.get_transform(TransformType.IMAGENET)
+MNIST_TRANSFORM = TransformFactory.get_transform(TransformType.MNIST)
 ONION_TRANSFORM = TransformFactory.get_transform(TransformType.ONION)
 MINIMAL_TRANSFORM = TransformFactory.get_transform(TransformType.MINIMAL)

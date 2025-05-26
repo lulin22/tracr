@@ -153,6 +153,23 @@ class BaseExperiment(ExperimentInterface):
         if class_names:
             return class_names
 
+        # Try to get class names from the dataset if available
+        if hasattr(self, "data_loader") and hasattr(self.data_loader, "dataset"):
+            dataset = self.data_loader.dataset
+            if hasattr(dataset, "classes"):
+                logger.info(f"Using class names from dataset: {dataset.classes}")
+                return dataset.classes
+            elif hasattr(dataset, "class_names"):
+                logger.info(f"Using class names from dataset: {dataset.class_names}")
+                return dataset.class_names
+
+        # For MNIST specifically, provide default class names if dataset name is mnist
+        dataset_name = self.config.get("dataset", {}).get("name", "").lower()
+        if "mnist" in dataset_name:
+            mnist_classes = [str(i) for i in range(10)]
+            logger.info(f"Using default MNIST class names: {mnist_classes}")
+            return mnist_classes
+
         logger.warning("No class names found in config. Returning empty list.")
         return []
 
@@ -171,6 +188,9 @@ class BaseExperiment(ExperimentInterface):
         # Extract the transmitted tensor and metadata
         # This is where decryption would occur if encryption is implemented
         output, original_size = data["input"]
+        
+        # Get image filename if provided in the data
+        image_file = data.get("image_file", "unknown")
 
         with torch.no_grad():
             # === TENSOR PREPARATION ===
@@ -201,7 +221,62 @@ class BaseExperiment(ExperimentInterface):
                 result = result.cpu()
 
             # Apply post-processing to generate final output
-            return self.post_processor.process_output(result, original_size)
+            processed_result = self.post_processor.process_output(result, original_size)
+            
+            # Record prediction to CSV file (append mode)
+            try:
+                if hasattr(self, 'paths') and self.paths.model_dir:
+                    import csv
+                    import os
+                    
+                    # Create the predictions CSV file path
+                    prediction_path = self.paths.model_dir / "prediction.csv"
+                    
+                    # Check if we need to create a header
+                    file_exists = os.path.isfile(prediction_path)
+                    
+                    # Extract prediction data based on type
+                    prediction_data = {}
+                    if isinstance(processed_result, dict):
+                        # For classification results
+                        if "class_name" in processed_result:
+                            prediction_data = {
+                                'image': image_file,
+                                'prediction': processed_result.get('class_name', ''),
+                                'confidence': processed_result.get('confidence', 0.0)
+                            }
+                    elif isinstance(processed_result, list) and processed_result:
+                        # For detection results (use first detection)
+                        if processed_result and "class_name" in processed_result[0]:
+                            detection = processed_result[0]
+                            prediction_data = {
+                                'image': image_file,
+                                'prediction': detection.get('class_name', ''),
+                                'confidence': detection.get('confidence', 0.0)
+                            }
+                    
+                    # Only write if we have prediction data
+                    if prediction_data:
+                        with open(prediction_path, 'a', newline='') as f:
+                            # Get fieldnames from the data
+                            fieldnames = list(prediction_data.keys())
+                            
+                            # Create CSV writer
+                            writer = csv.DictWriter(f, fieldnames=fieldnames)
+                            
+                            # Write header if this is a new file
+                            if not file_exists:
+                                writer.writeheader()
+                            
+                            # Write the data row
+                            writer.writerow(prediction_data)
+                        
+                        logger.info(f"Appended prediction for image {image_file} to {prediction_path}")
+            except Exception as e:
+                logger.error(f"Error recording prediction to CSV: {e}")
+            
+            # Return the original processed result without modification
+            return processed_result
 
     def _get_original_image(self, tensor: torch.Tensor, image_path: str) -> Image.Image:
         """Reconstruct or load original image from tensor or file path."""
@@ -301,6 +376,24 @@ class BaseExperiment(ExperimentInterface):
                 img = img.convert("RGB")
 
             img.save(output_path, "JPEG", quality=95)
+            
+            # Log the image filename with its prediction details
+            if isinstance(processed_result, dict) and "class_name" in processed_result:
+                # For classification results (ImageNet)
+                logger.info(f"Image: {image_file} → Prediction: {processed_result['class_name']} ({processed_result['confidence']:.2%})")
+                if true_class:
+                    logger.info(f"  Ground truth: {true_class}")
+            elif isinstance(processed_result, list) and processed_result:
+                # For detection results (YOLO)
+                logger.info(f"Image: {image_file} → Detections: {len(processed_result)}")
+                for i, det in enumerate(processed_result[:3]):  # Log first 3 detections
+                    logger.info(f"  Detection #{i+1}: {det['class_name']} ({det['confidence']:.2%})")
+                if len(processed_result) > 3:
+                    logger.info(f"  ... and {len(processed_result) - 3} more detections")
+            else:
+                # Generic case
+                logger.info(f"Image: {image_file} → Saved prediction to {output_path}")
+            
             logger.debug(f"Saved visualization to {output_path}")
 
         except Exception as e:
@@ -358,8 +451,8 @@ class BaseExperiment(ExperimentInterface):
             return metrics
 
         # PRIMARY SOURCE: Direct metrics from collector
-        metrics_from_model = self.model.get_layer_metrics()
-        if metrics_from_model:
+        model_metrics = self.model.get_layer_metrics()
+        if model_metrics:
             logger.info(
                 f"Retrieved metrics from metrics collector for split {split_idx}"
             )
@@ -372,8 +465,8 @@ class BaseExperiment(ExperimentInterface):
 
             # Aggregate metrics across all layers up to the tensor split point
             for layer_idx in range(split_idx + 1):
-                if layer_idx in metrics_from_model:
-                    layer_data = metrics_from_model[layer_idx]
+                if layer_idx in model_metrics:
+                    layer_data = model_metrics[layer_idx]
 
                     # Only include layers with valid power readings
                     if layer_data.get("power_reading", 0) > 0:

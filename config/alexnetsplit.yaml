@@ -5,7 +5,7 @@
 # ================================================================
 default:
   device: cpu
-  save_layer_images: false
+  save_layer_images: true
   collect_metrics: true
 
 # ================================================================

@@ -42,6 +42,13 @@ class DatasetRegistry:
             "description": "Onion dataset for computer vision experiments",
             "requires_config": ["root", "img_directory"],
         },
+        "mnist": {
+            "module_path": "..mnist",
+            "loader_function": "load_mnist_dataset",
+            "type": "image",
+            "description": "MNIST dataset for handwritten digit classification",
+            "requires_config": ["root"],
+        },
     }
 
     @classmethod

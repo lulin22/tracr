@@ -1,0 +1,72 @@
+# config/convnet_mnist.yaml
+
+# ================================================================
+# DEFAULT CONFIGURATIONS
+# ================================================================
+default:
+  device: cpu
+  save_layer_images: true
+  collect_metrics: true
+
+# ================================================================
+# LOGGING CONFIGURATIONS
+# ================================================================
+logging:
+  log_level: DEBUG
+  log_file: logs/convnet_mnist.log
+
+# ================================================================
+# MODEL CONFIGURATIONS
+# ================================================================
+model:
+  model_name: convnet
+  version: null
+  pretrained: false
+  weight_path: null
+  input_size: [1, 28, 28]
+  split_layer: 2
+  save_layers: [1, 2]
+  hidden_size: 64
+  num_classes: 10
+  mode: eval
+  depth: 2
+  flush_buffer_size: 100
+  warmup_iterations: 10
+  log_file: logs/convnet_mnist.log
+
+# ================================================================
+# DATASET CONFIGURATIONS
+# ================================================================
+dataset:
+  name: "mnist"
+  root: "data/MNIST"
+  train: true
+  transform: null
+  max_samples: -1
+
+# ================================================================
+# DATALOADER CONFIGURATIONS
+# ================================================================
+dataloader:
+  batch_size: 1
+  shuffle: false
+  num_workers: 0
+  collate_fn: null
+
+# ================================================================
+# COMPRESSION CONFIGURATIONS
+# ================================================================
+compression:
+  clevel: 3
+  filter: SHUFFLE
+  codec: ZSTD
+
+# ================================================================
+# ENCRYPTION CONFIGURATIONS
+# ================================================================
+encryption:
+  enabled: false                   # Set to true to enable encryption
+  password: null                    # Optional password for encryption
+  key_file: null                    # Optional path to encryption key file
+  degree: 8192                      # Polynomial modulus degree
+  scale: 26                         # Bit scale for encoding precision 

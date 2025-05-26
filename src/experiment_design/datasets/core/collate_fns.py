@@ -56,6 +56,19 @@ def imagenet_collate(
 
 
 @safe_collate
+def mnist_collate(
+    batch: List[Tuple[torch.Tensor, int, str]],
+) -> Tuple[torch.Tensor, torch.Tensor, Tuple[str, ...]]:
+    """Collate function for MNIST-style datasets.
+
+    Processes a batch of (image_tensor, label_int, filename_str) tuples into
+    batched tensors suitable for model input and evaluation.
+    """
+    images, labels, image_files = zip(*batch)
+    return torch.stack(images, 0), torch.tensor(labels), image_files
+
+
+@safe_collate
 def onion_collate(
     batch: List[Tuple[torch.Tensor, Image.Image, str]],
 ) -> Tuple[torch.Tensor, Tuple[Image.Image, ...], Tuple[str, ...]]:
@@ -84,6 +97,7 @@ class CollateRegistry:
     _registry: Dict[str, Callable] = {
         "imagenet": imagenet_collate,
         "onion": onion_collate,
+        "mnist": mnist_collate,
         "default": default_collate,
         None: None,  # Allow explicit None
     }
@@ -126,11 +140,13 @@ class CollateRegistry:
 # Register standard collate functions in the registry
 CollateRegistry.register("imagenet_collate", imagenet_collate)
 CollateRegistry.register("onion_collate", onion_collate)
+CollateRegistry.register("mnist_collate", mnist_collate)
 
 # Dictionary for backward compatibility
 COLLATE_FUNCTIONS: Dict[Optional[str], Optional[Callable]] = {
     "imagenet_collate": imagenet_collate,
     "onion_collate": onion_collate,
+    "mnist_collate": mnist_collate,
     "default_collate": default_collate,
     None: None,
 }

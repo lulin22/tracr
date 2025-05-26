@@ -5,8 +5,8 @@
 # ================================================================
 default:
   device: cpu
-  save_layer_images: false
-  collect_metrics: false
+  save_layer_images: true
+  collect_metrics: true
 
 # ==========================py======================================
 # LOGGING CONFIGURATIONS

@@ -3,6 +3,7 @@
 # Dataset implementations
 from .imagenet import ImageNetDataset, load_imagenet_dataset
 from .onion import OnionDataset, load_onion_dataset
+from .mnist import MNISTDataset, load_mnist_dataset
 from .custom import (
     CustomDataset,
     load_custom_dataset,
@@ -16,6 +17,8 @@ __all__ = [
     "OnionDataset",
     "load_imagenet_dataset",
     "load_onion_dataset",
+    "MNISTDataset",
+    "load_mnist_dataset",
     # Custom dataset implementation
     "CustomDataset",
     "load_custom_dataset",
