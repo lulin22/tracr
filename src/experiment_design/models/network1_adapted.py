@@ -50,6 +50,27 @@ class ConvNetModel(nn.Module):
         # Create the actual ConvNet model
         self.model = ConvNet(hidden=self.hidden_size, output=self.num_classes)
         
+        # Load weights if weight_path is specified
+        if model_config.get("weight_path"):
+            weight_path = model_config["weight_path"]
+            try:
+                from pathlib import Path
+                if Path(weight_path).exists():
+                    logger.info(f"Loading ConvNet weights from: {weight_path}")
+                    device = model_config.get("default", {}).get("device", "cpu")
+                    state_dict = torch.load(weight_path, map_location=device)
+                    
+                    # Load weights into the nested model
+                    self.model.load_state_dict(state_dict)
+                    logger.info("✓ ConvNet weights loaded successfully")
+                else:
+                    logger.warning(f"Weight file not found: {weight_path}")
+            except Exception as e:
+                logger.error(f"Failed to load ConvNet weights: {e}")
+                logger.warning("Continuing with random weights")
+        else:
+            logger.info("No weight_path specified, using random weights")
+        
         logger.info(f"ConvNet initialized with hidden_size={self.hidden_size}, num_classes={self.num_classes}")
     
     def forward(self, x: Tensor, **kwargs) -> Tensor:

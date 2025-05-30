@@ -266,7 +266,7 @@ class DatasetFactory:
 
             # Create a copy of the config without the 'name' parameter
             # The name is only used to identify the dataset, not as a parameter
-            loader_config = {k: v for k, v in config.items() if k != "name"}
+            loader_config = {k: v for k, v in config.items() if k not in ["name", "class_names"]}
 
             # Create the dataset using filtered config parameters
             dataset = loader(**loader_config)

@@ -22,7 +22,7 @@ model:
   model_name: convnet
   version: null
   pretrained: false
-  weight_path: null
+  weight_path: data/MNIST/weights/mnist.pth
   input_size: [1, 28, 28]
   split_layer: 2
   save_layers: [1, 2]
@@ -42,7 +42,7 @@ dataset:
   root: "data/MNIST"
   train: true
   transform: null
-  max_samples: -1
+  max_samples: 100  # Very small sample for quick testing
 
 # ================================================================
 # DATALOADER CONFIGURATIONS

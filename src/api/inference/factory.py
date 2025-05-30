@@ -26,6 +26,7 @@ class ModelProcessorFactory:
         "vgg": ImageNetProcessor,
         "mobilenet": ImageNetProcessor,
         "efficientnet": ImageNetProcessor,
+        "convnet": ImageNetProcessor, # Create a ConvNet / MNIST processor inside .processors
         # Add mappings for additional model families as needed
     }
 
