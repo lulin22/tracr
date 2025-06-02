@@ -714,14 +714,24 @@ class Server:
         - CPU utilization for compression/decompression
         - Memory usage during transfer
         """
+        # Check encryption mode from config (default to "transmission")
+        encryption_mode = config.get("encryption", {}).get("mode", "transmission")
+        
         if "compression" in config:
             logger.debug(f"Updating compression settings: {config['compression']}")
             
             # Create new compression instance with the received settings
             if self.encryption:
                 # If we have encryption set up, pass it to the new compression instance
-                self.compress_data = DataCompression(config["compression"], encryption=self.encryption)
-                logger.debug("Updated compression with encryption enabled")
+                self.compress_data = DataCompression(
+                    config["compression"], 
+                    encryption=self.encryption,
+                    encryption_mode=encryption_mode
+                )
+                if encryption_mode == "full":
+                    logger.info("Updated compression with full encryption mode - server will process encrypted tensors")
+                else:
+                    logger.debug("Updated compression with transmission encryption mode")
             else:
                 # Standard compression without encryption
                 self.compress_data = DataCompression(config["compression"])
@@ -730,8 +740,15 @@ class Server:
             # If no compression settings in config, keep current settings
             if self.encryption:
                 # But make sure we use the encryption if it's been set up
-                self.compress_data = DataCompression(SERVER_COMPRESSION_SETTINGS, encryption=self.encryption)
-                logger.debug("Keeping minimal compression settings with encryption")
+                self.compress_data = DataCompression(
+                    SERVER_COMPRESSION_SETTINGS, 
+                    encryption=self.encryption,
+                    encryption_mode=encryption_mode
+                )
+                if encryption_mode == "full":
+                    logger.info("Using minimal compression with full encryption mode")
+                else:
+                    logger.debug("Keeping minimal compression settings with transmission encryption")
             else:
                 logger.warning("No compression settings in config, keeping minimal settings without encryption")
 

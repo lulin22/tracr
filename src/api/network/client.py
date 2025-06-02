@@ -114,45 +114,46 @@ class DataCompression:
         Compress tensor data for efficient network transmission.
 
         === TENSOR SHARING PIPELINE - STAGE 1: COMPRESSION ===
-        Serializes and compresses tensors before network transmission to reduce bandwidth
-        requirements. This method is critical for efficient tensor sharing between devices.
+        Serializes, optionally encrypts, and compresses tensors before network transmission 
+        to reduce bandwidth requirements. This method is critical for efficient tensor 
+        sharing between devices.
         """
         try:
             # First serialize the tensor data structure using pickle
             serialized_data = pickle.dumps(data, protocol=HIGHEST_PROTOCOL)
 
-            # Apply compression algorithm based on available libraries
-            if BLOSC2_AVAILABLE:
-                compressed_data = blosc2.compress(
-                    serialized_data,
-                    clevel=self.config["clevel"],
-                    filter=self._filter,
-                    codec=self._codec,
-                )
-            else:
-                compressed_data = zlib.compress(
-                    serialized_data, level=self.config["clevel"]
-                )
-
-            # Apply encryption if enabled
+            # Apply encryption if enabled (BEFORE compression)
             if self.encryption_enabled:
                 try:
                     # Use homomorphic encryption for secure transmission
-                    encrypted_data, metadata = self.encryption.encrypt(compressed_data)
+                    encrypted_data, metadata = self.encryption.encrypt(serialized_data)
                     
                     # Serialize metadata for transmission
                     metadata_bytes = pickle.dumps(metadata, protocol=HIGHEST_PROTOCOL)
                     
                     # Format data as: [metadata_length (4 bytes)][metadata][encrypted_data]
                     metadata_len = len(metadata_bytes)
-                    final_data = metadata_len.to_bytes(4, byteorder='big') + metadata_bytes + encrypted_data
-                    
-                    return final_data, len(final_data)
+                    data_to_compress = metadata_len.to_bytes(4, byteorder='big') + metadata_bytes + encrypted_data
                 except Exception as e:
                     logger.error(f"Tensor encryption failed: {e}")
                     raise CompressionError(f"Failed to encrypt tensor data: {e}")
+            else:
+                # Use original serialized data for compression
+                data_to_compress = serialized_data
+
+            # Apply compression algorithm based on available libraries
+            if BLOSC2_AVAILABLE:
+                compressed_data = blosc2.compress(
+                    data_to_compress,
+                    clevel=self.config["clevel"],
+                    filter=self._filter,
+                    codec=self._codec,
+                )
+            else:
+                compressed_data = zlib.compress(
+                    data_to_compress, level=self.config["clevel"]
+                )
             
-            # Return compressed data without encryption
             return compressed_data, len(compressed_data)
         except Exception as e:
             logger.error(f"Tensor compression failed: {e}")
@@ -163,21 +164,27 @@ class DataCompression:
         Decompress received tensor data from network transmission.
 
         === TENSOR SHARING PIPELINE - STAGE 3: DECOMPRESSION ===
-        Decompresses and deserializes tensor data received from the network,
-        recovering the original tensor structure for computational processing.
+        Decompresses, optionally decrypts, and deserializes tensor data received from 
+        the network, recovering the original tensor structure for computational processing.
         """
         try:
+            # First apply decompression algorithm based on available libraries
+            if BLOSC2_AVAILABLE:
+                decompressed_data = blosc2.decompress(compressed_data)
+            else:
+                decompressed_data = zlib.decompress(compressed_data)
+            
             # Handle encrypted data if encryption is enabled
             if self.encryption_enabled:
                 # Extract metadata length (first 4 bytes)
-                metadata_len = int.from_bytes(compressed_data[:4], byteorder='big')
+                metadata_len = int.from_bytes(decompressed_data[:4], byteorder='big')
                 
                 # Extract metadata
-                metadata_bytes = compressed_data[4:4+metadata_len]
+                metadata_bytes = decompressed_data[4:4+metadata_len]
                 metadata = pickle.loads(metadata_bytes)
                 
                 # Extract encrypted data
-                encrypted_data = compressed_data[4+metadata_len:]
+                encrypted_data = decompressed_data[4+metadata_len:]
                 
                 # Decrypt the data
                 decrypted_data = self.encryption.decrypt(encrypted_data, metadata)
@@ -186,20 +193,11 @@ class DataCompression:
                 if not isinstance(decrypted_data, bytes):
                     return decrypted_data
                 
-                # Otherwise, decompress and deserialize
-                decompressed_data = decrypted_data
+                # Otherwise, deserialize
+                return pickle.loads(decrypted_data)
             else:
-                # Apply decompression without decryption
-                decompressed_data = compressed_data
-            
-            # Apply decompression algorithm based on available libraries
-            if BLOSC2_AVAILABLE:
-                decompressed = blosc2.decompress(decompressed_data)
-            else:
-                decompressed = zlib.decompress(decompressed_data)
-
-            # Deserialize to recover original tensor
-            return pickle.loads(decompressed)
+                # Standard deserialization without encryption
+                return pickle.loads(decompressed_data)
         except Exception as e:
             logger.error(f"Tensor decompression failed: {e}")
             raise DecompressionError(f"Failed to decompress tensor data: {e}")

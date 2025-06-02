@@ -59,13 +59,14 @@ class DecompressionError(CompressionError):
 class DataCompression:
     """Handles advanced tensor compression for distributed neural network computation."""
 
-    def __init__(self, config: Dict[str, Any], encryption: Optional[HomomorphicEncryption] = None) -> None:
+    def __init__(self, config: Dict[str, Any], encryption: Optional[HomomorphicEncryption] = None, encryption_mode: str = "transmission") -> None:
         """
         Initialize compression and encryption engine with configuration.
         
         Args:
             config: Compression configuration
             encryption: Optional encryption module for secure tensor transmission
+            encryption_mode: Encryption mode - "transmission" (decrypt on server) or "full" (process encrypted)
         """
         self.config = CompressionConfig(
             clevel=config.get("clevel", 3),
@@ -79,9 +80,18 @@ class DataCompression:
         # Store encryption module if provided
         self.encryption = encryption
         self.encryption_enabled = encryption is not None
+        self.encryption_mode = encryption_mode.lower() if encryption_mode else "transmission"
+        
+        # Validate encryption mode
+        if self.encryption_mode not in ["transmission", "full"]:
+            logger.warning(f"Invalid encryption mode '{encryption_mode}', using 'transmission'")
+            self.encryption_mode = "transmission"
         
         if self.encryption_enabled:
-            logger.info("Homomorphic encryption enabled for tensor transmission")
+            if self.encryption_mode == "full":
+                logger.info("Homomorphic encryption enabled in full mode (compute-on-encrypted)")
+            else:
+                logger.info("Homomorphic encryption enabled in transmission mode")
 
     def compress_data(self, data: Any) -> Tuple[bytes, int]:
         """
@@ -90,8 +100,8 @@ class DataCompression:
         === TENSOR SHARING - COMPRESSION PHASE ===
         Optimizes neural network tensors for network transmission by:
         1. Serializing the tensor data structure with pickle
-        2. Applying compression with tuned parameters for tensor data patterns
-        3. Applying homomorphic encryption if enabled
+        2. Applying homomorphic encryption if enabled
+        3. Applying compression with tuned parameters
 
         Returns a tuple of (compressed_bytes, compressed_length)
         """
@@ -99,79 +109,134 @@ class DataCompression:
             # Serialize tensor to bytes using highest available pickle protocol
             serialized_data = pickle.dumps(data, protocol=HIGHEST_PROTOCOL)
 
+            # Apply encryption if enabled (BEFORE compression)
+            if self.encryption_enabled:
+                try:
+                    # Use homomorphic encryption to encrypt the serialized data
+                    encrypted_data, metadata = self.encryption.encrypt(serialized_data)
+                    
+                    # Serialize metadata for transmission
+                    metadata_bytes = pickle.dumps(metadata, protocol=HIGHEST_PROTOCOL)
+                    
+                    # Combine metadata and encrypted data
+                    # Format: [metadata_length (4 bytes)][metadata][encrypted_data]
+                    metadata_len = len(metadata_bytes)
+                    data_to_compress = metadata_len.to_bytes(4, byteorder='big') + metadata_bytes + encrypted_data
+                except Exception as e:
+                    logger.error(f"Tensor encryption failed: {e}")
+                    raise CompressionError(f"Failed to encrypt tensor data: {e}")
+            else:
+                # Use original serialized data for compression
+                data_to_compress = serialized_data
+
             # Apply Blosc2 compression with configured parameters optimized for tensors
             compressed_data = blosc2.compress(
-                serialized_data,
+                data_to_compress,
                 clevel=self.config.clevel,
                 filter=self._filter,
                 codec=self._codec,
             )
             
-            # Apply encryption if enabled
-            if self.encryption_enabled:
-                try:
-                    # Use homomorphic encryption to encrypt the compressed data
-                    encrypted_data, metadata = self.encryption.encrypt(compressed_data)
-                    
-                    # Serialize metadata for transmission
-                    metadata_bytes = pickle.dumps(metadata, protocol=HIGHEST_PROTOCOL)
-                    
-                    # Prepend metadata length as 4 bytes, then metadata, then encrypted data
-                    metadata_len = len(metadata_bytes)
-                    final_data = metadata_len.to_bytes(4, byteorder='big') + metadata_bytes + encrypted_data
-                    
-                    return final_data, len(final_data)
-                except Exception as e:
-                    logger.error(f"Tensor encryption failed: {e}")
-                    raise CompressionError(f"Failed to encrypt tensor data: {e}")
-            
-            # Return compressed data without encryption
             return compressed_data, len(compressed_data)
         except Exception as e:
             logger.error(f"Tensor compression failed: {e}")
             raise CompressionError(f"Failed to compress tensor data: {e}")
 
-    def decompress_data(self, data: bytes) -> Any:
+    def decompress_data(self, data: bytes, skip_decryption: bool = False) -> Any:
         """
-        Decrypt (if needed) and decompress tensor data.
+        Decompress and decrypt (if needed) tensor data.
 
         === TENSOR SHARING - DECOMPRESSION PHASE ===
         Recovers the original tensor structure from compressed network data by:
-        1. Decrypting the data if encryption is enabled
-        2. Applying Blosc2 decompression to restore serialized bytes
+        1. Applying Blosc2 decompression to restore serialized bytes
+        2. Decrypting the data if encryption is enabled (unless skip_decryption is True)
         3. Deserializing the data back to its original tensor structure
+
+        Args:
+            data: Compressed data bytes
+            skip_decryption: If True and homomorphic_mode is enabled, skip decryption
+                           to allow processing on encrypted tensors
         """
         try:
+            # First decompress the data
+            decompressed_data = blosc2.decompress(data)
+            
             # Handle encrypted data if encryption is enabled
-            if self.encryption_enabled:
+            if self.encryption_enabled and not (self.encryption_mode == "full" and skip_decryption):
+                # Normal mode: decrypt after decompression
                 # Extract metadata length (first 4 bytes)
-                metadata_len = int.from_bytes(data[:4], byteorder='big')
+                metadata_len = int.from_bytes(decompressed_data[:4], byteorder='big')
                 
                 # Extract metadata
-                metadata_bytes = data[4:4+metadata_len]
+                metadata_bytes = decompressed_data[4:4+metadata_len]
                 metadata = pickle.loads(metadata_bytes)
                 
                 # Extract encrypted data
-                encrypted_data = data[4+metadata_len:]
+                encrypted_data = decompressed_data[4+metadata_len:]
                 
                 # Decrypt the data
-                compressed_data = self.encryption.decrypt(encrypted_data, metadata)
+                decrypted_data = self.encryption.decrypt(encrypted_data, metadata)
                 
                 # The result might be bytes or already deserialized tensor
-                if isinstance(compressed_data, bytes):
+                if isinstance(decrypted_data, bytes):
                     # If still bytes, deserialize it using pickle
-                    return pickle.loads(compressed_data)
+                    return pickle.loads(decrypted_data)
                 else:
                     # Otherwise return the already deserialized tensor
-                    return compressed_data
+                    return decrypted_data
+            elif self.encryption_enabled and self.encryption_mode == "full" and skip_decryption:
+                # Homomorphic mode: return encrypted tensor data with metadata
+                # This allows the server to process encrypted tensors
+                metadata_len = int.from_bytes(decompressed_data[:4], byteorder='big')
+                metadata_bytes = decompressed_data[4:4+metadata_len]
+                metadata = pickle.loads(metadata_bytes)
+                encrypted_data = decompressed_data[4+metadata_len:]
+                
+                # Return both encrypted data and metadata for later decryption
+                return {
+                    'encrypted_data': encrypted_data,
+                    'metadata': metadata,
+                    'is_encrypted': True
+                }
             else:
-                # Standard decompression without encryption
-                decompressed_data = blosc2.decompress(data)
+                # Standard deserialization without encryption
                 return pickle.loads(decompressed_data)
                 
         except Exception as e:
-            logger.error(f"Tensor decryption/decompression failed: {e}")
+            logger.error(f"Tensor decompression/decryption failed: {e}")
             raise DecompressionError(f"Failed to process received tensor data: {e}")
+
+    def decrypt_result(self, encrypted_result: Dict[str, Any]) -> Any:
+        """
+        Decrypt a result that was processed in encrypted form.
+        
+        This is used in homomorphic mode to decrypt the final result after
+        the server has processed the encrypted tensor.
+        
+        Args:
+            encrypted_result: Dictionary containing encrypted_data and metadata
+            
+        Returns:
+            Decrypted tensor result
+        """
+        if not self.encryption or self.encryption_mode != "full":
+            raise CompressionError("decrypt_result called but not in full mode")
+            
+        try:
+            encrypted_data = encrypted_result['encrypted_data']
+            metadata = encrypted_result['metadata']
+            
+            # Decrypt the result
+            decrypted_data = self.encryption.decrypt(encrypted_data, metadata)
+            
+            # Deserialize if needed
+            if isinstance(decrypted_data, bytes):
+                return pickle.loads(decrypted_data)
+            else:
+                return decrypted_data
+        except Exception as e:
+            logger.error(f"Result decryption failed: {e}")
+            raise DecryptionError(f"Failed to decrypt result: {e}")
 
     @staticmethod
     def _receive_chunk(conn: socket.socket, size: int) -> bytes:

@@ -24,7 +24,7 @@ model:
   pretrained: false
   weight_path: data/MNIST/weights/mnist.pth
   input_size: [1, 28, 28]
-  split_layer: 2
+  split_layer: 1
   save_layers: [1, 2]
   hidden_size: 64
   num_classes: 10
@@ -65,8 +65,9 @@ compression:
 # ENCRYPTION CONFIGURATIONS
 # ================================================================
 encryption:
-  enabled: false                   # Set to true to enable encryption
-  password: null                    # Optional password for encryption
-  key_file: null                    # Optional path to encryption key file
-  degree: 8192                      # Polynomial modulus degree
-  scale: 26                         # Bit scale for encoding precision 
+  enabled: true                   # Set to true to enable encryption
+  mode: "full"             # "transmission" (default) or "full" (homomorphic)
+  password: null                   # Optional password for encryption
+  key_file: null                   # Optional path to encryption key file
+  degree: 8192                     # Polynomial modulus degree for encryption
+  scale: 26                        # Bit scale for encoding precision 
