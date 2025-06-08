@@ -1,0 +1,108 @@
+# ================================================================
+# DEFAULT CONFIGURATIONS
+# ================================================================
+default:
+  device: cpu
+  save_layer_images: true
+  collect_metrics: true
+
+# ================================================================
+# DATASET CONFIGURATIONS
+# ================================================================
+dataset:
+  name: "cifar10"                  # Use cifar10 dataset loader
+  root: "data/CIFAR"               # Root directory for CIFAR data
+  train: true
+  transform: null                  # Use default CIFAR-10 transform with zero-centered normalization
+  max_samples: 100                 # Small sample for quick testing
+
+# ================================================================
+# DATALOADER CONFIGURATIONS
+# ================================================================
+dataloader:
+  batch_size: 1
+  shuffle: false
+  num_workers: 0
+  collate_fn: null
+
+# ================================================================
+# MODEL CONFIGURATIONS
+# ================================================================
+model:
+  model_name: cifar_convnet        # CIFAR-10 ConvNet with HE-friendly square activations
+  version: null
+  pretrained: false                # Set to false to load weights from weights_path, true for randomly initialized model
+  weight_path: data/CIFAR/weights/cifar.pth  # Path to pre-trained weights (used when pretrained=false)
+  input_size: [3, 32, 32]
+  split_layer: 1
+  save_layers: [1, 2]
+  hidden_size: 64
+  num_classes: 10
+  mode: eval
+  depth: 2
+  flush_buffer_size: 100
+  warmup_iterations: 10
+  log_file: logs/cifar10_experiment.log
+
+# ================================================================
+# SPLIT POINT CONFIGURATIONS
+# ================================================================
+split_points:
+  - name: conv1
+    layer_name: model.conv1
+    type: conv
+  - name: conv2  
+    layer_name: model.conv2
+    type: conv
+  - name: conv3
+    layer_name: model.conv3
+    type: conv
+  - name: fc1
+    layer_name: model.fc1
+    type: linear
+    
+# ================================================================
+# COMPRESSION CONFIGURATIONS
+# ================================================================
+compression:
+  clevel: 3
+  filter: SHUFFLE
+  codec: ZSTD
+
+# ================================================================
+# ENCRYPTION CONFIGURATIONS
+# ================================================================
+encryption:
+  enabled: true                   # Set to true to enable encryption
+  mode: "full"             # "transmission" (default) or "full" (homomorphic)
+  password: null                   # Optional password for encryption
+  key_file: null                   # Optional path to encryption key file
+  degree: 8192                     # Polynomial modulus degree for encryption
+  scale: 26                        # Bit scale for encoding precision
+
+# ================================================================
+# EXPERIMENT CONFIGURATIONS
+# ================================================================
+experiment:
+  type: "networked"                # networked (changed from local) to enable tensor sharing with encryption
+  num_samples: 100                 # Number of samples to process
+  batch_size: 1                    # Batch size for processing
+  save_results: true               # Whether to save experiment results
+  results_dir: "results/cifar10"   # Directory to save results
+  
+# ================================================================
+# NETWORK CONFIGURATIONS (for networked experiments)
+# ================================================================
+network:
+  server_ip: "localhost"
+  server_port: 8080
+  protocol: "tcp"
+  timeout: 60                      # Connection timeout in seconds
+  
+# ================================================================
+# LOGGING CONFIGURATIONS
+# ================================================================
+logging:
+  log_level: DEBUG
+  log_file: logs/cifar10_experiment.log
+  console: true                    # Also log to console 

@@ -1,8 +1,8 @@
 """
-Network client implementation for split computing tensor transmission.
+Network client for split computing implementation.
 
-This module implements client-side networking for distributed neural network computation,
-handling connections to server-side processing nodes and tensor data transfer.
+This module provides client-side functionality for establishing connections
+with a server and handling tensor transmission in a split computing architecture.
 """
 
 import pickle
@@ -18,8 +18,10 @@ from .protocols import (
     HIGHEST_PROTOCOL,
     DEFAULT_COMPRESSION_SETTINGS,
     DEFAULT_PORT,
+    SOCKET_TIMEOUT,
 )
-from .encryption import HomomorphicEncryption, create_encryption
+from .encryption import TensorEncryption
+from .compression import DataCompression
 
 try:
     import blosc2
@@ -65,245 +67,38 @@ class DecompressionError(CompressionError):
     pass
 
 
-class DataCompression:
-    """Handles tensor compression and decompression to minimize network transmission overhead."""
+class SplitComputeClient:
+    """
+    Handles communication between a client device and the split compute server.
 
-    def __init__(self, config: Dict[str, Any], encryption: Optional[HomomorphicEncryption] = None) -> None:
+    This class manages the network connection and tensor data transmission
+    for distributed neural network processing.
+    """
+
+    def __init__(self, config: Dict[str, Any], encryption: Optional[TensorEncryption] = None) -> None:
         """
-        Initialize compression and encryption engine with configuration.
-        
+        Initialize the client with configuration and optional encryption.
+
         Args:
-            config: Compression configuration
-            encryption: Optional encryption module for secure tensor transmission
+            config: Configuration dictionary containing network settings
+            encryption: Optional TensorEncryption instance for secure communications
         """
         self.config = config
-        self.encryption = encryption
-        self.encryption_enabled = encryption is not None
-        
-        if self.encryption_enabled:
-            logger.info("Homomorphic encryption enabled for tensor transmission")
-            
-        if BLOSC2_AVAILABLE:
-            # Configure optimal tensor compression parameters
-            self._filter = blosc2.Filter.SHUFFLE
-            self._codec = blosc2.Codec.ZSTD
-
-            # Override with user-specified filter if valid
-            if "filter" in self.config:
-                try:
-                    self._filter = blosc2.Filter[self.config["filter"]]
-                except (KeyError, AttributeError):
-                    logger.warning(
-                        f"Invalid blosc2 filter: {self.config['filter']}, using SHUFFLE"
-                    )
-
-            # Override with user-specified codec if valid
-            if "codec" in self.config:
-                try:
-                    self._codec = blosc2.Codec[self.config["codec"]]
-                except (KeyError, AttributeError):
-                    logger.warning(
-                        f"Invalid blosc2 codec: {self.config['codec']}, using ZSTD"
-                    )
-
-            if "clevel" not in self.config:
-                self.config["clevel"] = 3  # Default compression level
-
-    def compress_data(self, data: Any) -> Tuple[bytes, int]:
-        """
-        Compress tensor data for efficient network transmission.
-
-        === TENSOR SHARING PIPELINE - STAGE 1: COMPRESSION ===
-        Serializes, optionally encrypts, and compresses tensors before network transmission 
-        to reduce bandwidth requirements. This method is critical for efficient tensor 
-        sharing between devices.
-        """
-        try:
-            # First serialize the tensor data structure using pickle
-            serialized_data = pickle.dumps(data, protocol=HIGHEST_PROTOCOL)
-
-            # Apply encryption if enabled (BEFORE compression)
-            if self.encryption_enabled:
-                try:
-                    # Use homomorphic encryption for secure transmission
-                    encrypted_data, metadata = self.encryption.encrypt(serialized_data)
-                    
-                    # Serialize metadata for transmission
-                    metadata_bytes = pickle.dumps(metadata, protocol=HIGHEST_PROTOCOL)
-                    
-                    # Format data as: [metadata_length (4 bytes)][metadata][encrypted_data]
-                    metadata_len = len(metadata_bytes)
-                    data_to_compress = metadata_len.to_bytes(4, byteorder='big') + metadata_bytes + encrypted_data
-                except Exception as e:
-                    logger.error(f"Tensor encryption failed: {e}")
-                    raise CompressionError(f"Failed to encrypt tensor data: {e}")
-            else:
-                # Use original serialized data for compression
-                data_to_compress = serialized_data
-
-            # Apply compression algorithm based on available libraries
-            if BLOSC2_AVAILABLE:
-                compressed_data = blosc2.compress(
-                    data_to_compress,
-                    clevel=self.config["clevel"],
-                    filter=self._filter,
-                    codec=self._codec,
-                )
-            else:
-                compressed_data = zlib.compress(
-                    data_to_compress, level=self.config["clevel"]
-                )
-            
-            return compressed_data, len(compressed_data)
-        except Exception as e:
-            logger.error(f"Tensor compression failed: {e}")
-            raise CompressionError(f"Failed to compress tensor data: {e}")
-
-    def decompress_data(self, compressed_data: bytes) -> Any:
-        """
-        Decompress received tensor data from network transmission.
-
-        === TENSOR SHARING PIPELINE - STAGE 3: DECOMPRESSION ===
-        Decompresses, optionally decrypts, and deserializes tensor data received from 
-        the network, recovering the original tensor structure for computational processing.
-        """
-        try:
-            # First apply decompression algorithm based on available libraries
-            if BLOSC2_AVAILABLE:
-                decompressed_data = blosc2.decompress(compressed_data)
-            else:
-                decompressed_data = zlib.decompress(compressed_data)
-            
-            # Handle encrypted data if encryption is enabled
-            if self.encryption_enabled:
-                # Extract metadata length (first 4 bytes)
-                metadata_len = int.from_bytes(decompressed_data[:4], byteorder='big')
-                
-                # Extract metadata
-                metadata_bytes = decompressed_data[4:4+metadata_len]
-                metadata = pickle.loads(metadata_bytes)
-                
-                # Extract encrypted data
-                encrypted_data = decompressed_data[4+metadata_len:]
-                
-                # Decrypt the data
-                decrypted_data = self.encryption.decrypt(encrypted_data, metadata)
-                
-                # If the result is already a tensor, return it
-                if not isinstance(decrypted_data, bytes):
-                    return decrypted_data
-                
-                # Otherwise, deserialize
-                return pickle.loads(decrypted_data)
-            else:
-                # Standard deserialization without encryption
-                return pickle.loads(decompressed_data)
-        except Exception as e:
-            logger.error(f"Tensor decompression failed: {e}")
-            raise DecompressionError(f"Failed to decompress tensor data: {e}")
-
-    def receive_full_message(self, conn: socket.socket, expected_length: int) -> bytes:
-        """
-        Receive a complete tensor data message of expected length from a socket.
-
-        === TENSOR SHARING PIPELINE - STAGE 2: DATA RECEPTION ===
-        Handles fragmentation of large tensors by receiving in chunks until the complete
-        tensor is received or a connection error occurs.
-        """
-        data = bytearray()
-        received = 0
-
-        while received < expected_length:
-            try:
-                remaining = expected_length - received
-                chunk = conn.recv(min(BUFFER_SIZE, remaining))
-
-                if not chunk:
-                    logger.error(
-                        f"Connection closed while receiving tensor data ({received}/{expected_length} bytes received)"
-                    )
-                    raise NetworkError("Connection closed while receiving tensor data")
-
-                data.extend(chunk)
-                received += len(chunk)
-
-            except socket.timeout:
-                logger.error("Socket timed out while receiving tensor data")
-                raise NetworkError("Socket timed out while receiving tensor data")
-            except ConnectionError as e:
-                logger.error(f"Connection error while receiving tensor data: {e}")
-                raise NetworkError(f"Connection error: {e}")
-            except Exception as e:
-                logger.error(f"Error receiving tensor data: {e}")
-                raise NetworkError(f"Error receiving tensor data: {e}")
-
-        return bytes(data)
-
-
-class SplitComputeClient:
-    """Manages client-side network operations for distributed tensor computation."""
-
-    def __init__(
-        self, 
-        network_config: NetworkConfig, 
-        encryption_context: Optional[bytes] = None,
-        encryption_password: Optional[str] = None,
-        poly_modulus_degree: int = 8192,
-        bit_scale: int = 26,
-        encryption: Optional[HomomorphicEncryption] = None
-    ) -> None:
-        """
-        Initialize client with network configuration and optional encryption.
-        
-        Args:
-            network_config: Network configuration settings
-            encryption_context: Optional serialized TenSEAL context for homomorphic encryption
-            encryption_password: Optional password to derive encryption parameters
-            poly_modulus_degree: Polynomial modulus degree for homomorphic encryption (power of 2)
-            bit_scale: Bit scale for encoding precision in homomorphic encryption
-            encryption: Optional pre-configured HomomorphicEncryption instance
-        """
-        self.config = network_config.config
-        self.host = network_config.host
-        self.port = network_config.port
-        self.socket = None
+        self.socket: Optional[socket.socket] = None
         self.connected = False
-
-        # Setup encryption if parameters are provided
+        self.host: Optional[str] = None
+        self.port: Optional[int] = None
         self.encryption = encryption
-        
-        # If encryption instance is not directly provided, try to create one from parameters
-        if self.encryption is None:
-            if encryption_context is not None:
-                # Create encryption from serialized context
-                try:
-                    self.encryption = HomomorphicEncryption.from_serialized_context(encryption_context)
-                    logger.info("Initialized homomorphic encryption from provided context")
-                except Exception as e:
-                    logger.error(f"Failed to initialize encryption from context: {e}")
-                    raise
-            elif encryption_password is not None:
-                # Create encryption from password
-                try:
-                    self.encryption = HomomorphicEncryption.from_password(
-                        encryption_password, 
-                        poly_modulus_degree=poly_modulus_degree
-                    )
-                    logger.info("Initialized homomorphic encryption from password")
-                except Exception as e:
-                    logger.error(f"Failed to initialize encryption from password: {e}")
-                    raise
-        elif encryption_context is not None or encryption_password is not None:
-            logger.warning("Both direct encryption instance and parameters provided; using direct instance")
-        
-        # Initialize compression with optional encryption
-        compression_config = self.config.get(
-            "compression", {"clevel": 3, "filter": "SHUFFLE", "codec": "ZSTD"}
-        )
-        self.compressor = DataCompression(
-            compression_config,
-            encryption=self.encryption
-        )
+
+        # Initialize compression with encryption if provided
+        compression_config = config.get("compression", {})
+        encryption_mode = config.get("encryption", {}).get("mode", "transmission") if encryption else "transmission"
+        self.compressor = DataCompression(compression_config, encryption=encryption, encryption_mode=encryption_mode)
+
+        if encryption:
+            logger.info(f"Client initialized with {encryption.mode} encryption")
+        else:
+            logger.info("Client initialized without encryption")
 
     def connect(self) -> bool:
         """
@@ -325,10 +120,20 @@ class SplitComputeClient:
             if self.encryption is not None:
                 # Create a copy of the config to avoid modifying the original
                 config_with_context = self.config.copy()
-                # Add encryption context to config for server synchronization
-                config_with_context["encryption"] = {
-                    "context": self.encryption.serialize_context()
-                }
+                
+                # Get existing encryption config or create empty dict
+                existing_encryption = config_with_context.get("encryption", {})
+                
+                # Add encryption context to the existing config for server synchronization
+                encryption_config = existing_encryption.copy()
+                encryption_config.update({
+                    "context": self.encryption.serialize_context(),
+                    "mode": self.encryption.mode,
+                    "degree": self.encryption.degree,
+                    "scale": self.encryption.scale
+                })
+                
+                config_with_context["encryption"] = encryption_config
                 config_bytes = pickle.dumps(config_with_context, protocol=HIGHEST_PROTOCOL)
             else:
                 # Serialize configuration without encryption
@@ -349,6 +154,31 @@ class SplitComputeClient:
                 return False
 
             logger.info("Server acknowledged configuration")
+            
+            # Wait for server ready signal (indicates server finished initialization)
+            logger.info("Waiting for server to complete initialization...")
+            
+            # Set a longer timeout for initialization (encryption + model loading can be slow)
+            original_timeout = self.socket.gettimeout()
+            self.socket.settimeout(120)  # 2 minutes for server initialization
+            
+            try:
+                ready_signal = self.socket.recv(5)  # "READY" is 5 bytes
+                if ready_signal != b"READY":
+                    logger.error(
+                        f"Server ready signal failed: expected b'READY', got {ready_signal!r}"
+                    )
+                    self.close()
+                    return False
+                
+                logger.info("Server is ready for tensor processing")
+            except socket.timeout:
+                logger.error("Timeout waiting for server initialization (2 minutes)")
+                self.close()
+                return False
+            finally:
+                # Restore original timeout
+                self.socket.settimeout(original_timeout)
             self.connected = True
             return True
 
@@ -451,49 +281,92 @@ class SplitComputeClient:
 
 
 def create_network_client(
-    config: Optional[Dict[str, Any]] = None,
-    host: str = "localhost",
+    config: Dict[str, Any],
+    host: str,
     port: int = DEFAULT_PORT,
+    encryption_context: Optional[bytes] = None,
     encryption_password: Optional[str] = None,
-    poly_modulus_degree: int = 8192,
-    bit_scale: int = 26,
-    encryption: Optional[HomomorphicEncryption] = None,
+    encryption_key_file: Optional[str] = None,
+    encryption: Optional[TensorEncryption] = None,
+    **kwargs
 ) -> SplitComputeClient:
     """
-    Create a network client for tensor sharing in split computing.
+    Factory function to create a properly configured network client.
 
-    This factory function creates a properly configured client that can
-    transmit intermediate tensors to the server component of the split
-    computing architecture.
-    
     Args:
-        config: Configuration dictionary
+        config: Configuration dictionary for the client
         host: Server hostname or IP address
         port: Server port number
-        encryption_password: Optional password for homomorphic encryption
-        poly_modulus_degree: Polynomial modulus degree for homomorphic encryption
-        bit_scale: Bit scale for encoding precision
-        encryption: Optional pre-configured HomomorphicEncryption instance
-        
+        encryption_context: Optional serialized encryption context
+        encryption_password: Optional password for encryption
+        encryption_key_file: Optional path to encryption key file
+        encryption: Optional pre-configured TensorEncryption instance
+        **kwargs: Additional keyword arguments
+
     Returns:
-        Configured SplitComputeClient
+        Configured SplitComputeClient instance
     """
-    if config is None:
-        config = {}
+    # Initialize encryption if parameters are provided
+    if encryption is None and (encryption_context or encryption_password or encryption_key_file):
+        try:
+            # Determine encryption mode from config
+            encryption_config = config.get("encryption", {})
+            encryption_mode = encryption_config.get("mode", "transmission")
+            degree = encryption_config.get("degree", 8192)
+            scale = encryption_config.get("scale", 26)
+            
+            if encryption_context:
+                logger.info("Creating encryption from serialized context")
+                # Note: Context-based encryption needs to be implemented
+                logger.warning("Context-based encryption not yet implemented with new TensorEncryption")
+                encryption = TensorEncryption(mode=encryption_mode, degree=degree, scale=scale)
+            elif encryption_password:
+                logger.info("Creating encryption from password")
+                encryption = TensorEncryption.from_password(
+                    password=encryption_password,
+                    mode=encryption_mode,
+                    degree=degree,
+                    scale=scale
+                )
+            elif encryption_key_file:
+                logger.info(f"Creating encryption from key file: {encryption_key_file}")
+                logger.warning("Key file-based encryption not yet implemented with new TensorEncryption")
+                encryption = TensorEncryption(mode=encryption_mode, degree=degree, scale=scale)
+        except Exception as e:
+            logger.error(f"Failed to initialize client encryption: {e}")
+            encryption = None
 
-    # Ensure compression configuration for efficient tensor transmission
-    if "compression" not in config:
-        config["compression"] = DEFAULT_COMPRESSION_SETTINGS
+    client = SplitComputeClient(config, encryption=encryption)
+    client.host = host
+    client.port = port
 
-    network_config = NetworkConfig(config=config, host=host, port=port)
-    
-    # Create client with optional encryption
-    client = SplitComputeClient(
-        network_config,
-        encryption_password=encryption_password if encryption is None else None,
-        poly_modulus_degree=poly_modulus_degree,
-        bit_scale=bit_scale,
-        encryption=encryption
-    )
-    
     return client
+
+
+def create_client_with_encryption(
+    config: Dict[str, Any],
+    host: str,
+    port: int = DEFAULT_PORT,
+    encryption: Optional[TensorEncryption] = None,
+    **kwargs
+) -> SplitComputeClient:
+    """
+    Create a network client with encryption support.
+
+    Args:
+        config: Configuration dictionary for the client
+        host: Server hostname or IP address
+        port: Server port number
+        encryption: Optional pre-configured TensorEncryption instance
+        **kwargs: Additional keyword arguments
+
+    Returns:
+        Configured SplitComputeClient instance with encryption
+    """
+    return create_network_client(
+        config=config,
+        host=host,
+        port=port,
+        encryption=encryption,
+        **kwargs
+    )

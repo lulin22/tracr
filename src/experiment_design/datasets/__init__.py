@@ -4,6 +4,7 @@
 from .imagenet import ImageNetDataset, load_imagenet_dataset
 from .onion import OnionDataset, load_onion_dataset
 from .mnist import MNISTDataset, load_mnist_dataset
+from .cifar10 import CIFAR10Dataset, load_cifar10_dataset
 from .custom import (
     CustomDataset,
     load_custom_dataset,
@@ -19,6 +20,8 @@ __all__ = [
     "load_onion_dataset",
     "MNISTDataset",
     "load_mnist_dataset",
+    "CIFAR10Dataset",
+    "load_cifar10_dataset",
     # Custom dataset implementation
     "CustomDataset",
     "load_custom_dataset",

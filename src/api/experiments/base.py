@@ -169,6 +169,13 @@ class BaseExperiment(ExperimentInterface):
             mnist_classes = [str(i) for i in range(10)]
             logger.info(f"Using default MNIST class names: {mnist_classes}")
             return mnist_classes
+        
+        # For CIFAR-10 specifically, provide default class names if dataset name is cifar10
+        if "cifar10" in dataset_name:
+            cifar10_classes = ['airplane', 'automobile', 'bird', 'cat', 'deer',
+                             'dog', 'frog', 'horse', 'ship', 'truck']
+            logger.info(f"Using default CIFAR-10 class names: {cifar10_classes}")
+            return cifar10_classes
 
         logger.warning("No class names found in config. Returning empty list.")
         return []
@@ -186,8 +193,25 @@ class BaseExperiment(ExperimentInterface):
         """
         # === TENSOR RECEPTION ===
         # Extract the transmitted tensor and metadata
-        # This is where decryption would occur if encryption is implemented
         output, original_size = data["input"]
+        
+        # Check if tensor is encrypted and needs decryption
+        if isinstance(output, dict) and (
+            output.get("is_encrypted") or "encrypted_data" in output
+        ):
+            # Decide whether to decrypt based on encryption mode
+            encryption_mode = self.config.get("encryption", {}).get("mode", "none")
+            if encryption_mode == "transmission":
+                logger.info(
+                    f"[Transmission] Decrypting received tensor of shape {output.get('shape', 'unknown')}"
+                )
+                from ..utils.tensor_encryption import decrypt_tensor
+                output = decrypt_tensor(output)
+                logger.info(f"Decrypted tensor shape: {getattr(output, 'shape', 'unknown')}")
+            elif encryption_mode == "full":
+                # In full homomorphic mode, we leave the tensor encrypted so that
+                # subsequent model layers can operate on ciphertext using TenSEAL.
+                logger.debug("Full encryption mode active – leaving tensor encrypted for homomorphic processing")
         
         # Get image filename if provided in the data
         image_file = data.get("image_file", "unknown")
@@ -223,6 +247,20 @@ class BaseExperiment(ExperimentInterface):
             # Apply post-processing to generate final output
             processed_result = self.post_processor.process_output(result, original_size)
             
+            # Encrypt the result if encryption is enabled for full mode
+            encryption_mode = self.config.get("encryption", {}).get("mode", "none")
+            if encryption_mode == "full" and isinstance(result, torch.Tensor):
+                from ..utils.tensor_encryption import encrypt_tensor
+                logger.info(f"Encrypting result tensor of shape {result.shape}")
+                encrypted_result = encrypt_tensor(result)
+                # Store both encrypted and processed results
+                final_result = {
+                    "encrypted_result": encrypted_result,
+                    "processed_result": processed_result
+                }
+            else:
+                final_result = processed_result
+            
             # Record prediction to CSV file (append mode)
             try:
                 if hasattr(self, 'paths') and self.paths.model_dir:
@@ -237,18 +275,19 @@ class BaseExperiment(ExperimentInterface):
                     
                     # Extract prediction data based on type
                     prediction_data = {}
-                    if isinstance(processed_result, dict):
+                    result_to_process = processed_result  # Always use processed result for CSV
+                    if isinstance(result_to_process, dict):
                         # For classification results
-                        if "class_name" in processed_result:
+                        if "class_name" in result_to_process:
                             prediction_data = {
                                 'image': image_file,
-                                'prediction': processed_result.get('class_name', ''),
-                                'confidence': processed_result.get('confidence', 0.0)
+                                'prediction': result_to_process.get('class_name', ''),
+                                'confidence': result_to_process.get('confidence', 0.0)
                             }
-                    elif isinstance(processed_result, list) and processed_result:
+                    elif isinstance(result_to_process, list) and result_to_process:
                         # For detection results (use first detection)
-                        if processed_result and "class_name" in processed_result[0]:
-                            detection = processed_result[0]
+                        if result_to_process and "class_name" in result_to_process[0]:
+                            detection = result_to_process[0]
                             prediction_data = {
                                 'image': image_file,
                                 'prediction': detection.get('class_name', ''),
@@ -275,8 +314,8 @@ class BaseExperiment(ExperimentInterface):
             except Exception as e:
                 logger.error(f"Error recording prediction to CSV: {e}")
             
-            # Return the original processed result without modification
-            return processed_result
+            # Return the final result (encrypted or normal)
+            return final_result
 
     def _get_original_image(self, tensor: torch.Tensor, image_path: str) -> Image.Image:
         """Reconstruct or load original image from tensor or file path."""

@@ -1,16 +1,8 @@
 """
-Networked experiment implementation for split computing.
+Networked distributed computing experiment using client-server tensor sharing.
 
-This module defines the NetworkedExperiment class, which executes experiments
-with part of the computation done on a remote server. It handles the setup,
-execution, and monitoring of experiments in a networked environment, including
-tensor sharing between edge device and server.
-
-Key aspects of tensor sharing:
-- Tensors are processed locally up to a split layer
-- The intermediate tensors are prepared, compressed, and sent to the server
-- The server processes the remaining computation and returns results
-- All network communication is handled by network_client
+This module implements the client side of a split computing architecture where
+a neural network model is divided between local and remote processing.
 """
 
 import logging
@@ -23,16 +15,18 @@ from typing import Any, Dict, List, Tuple, Optional
 
 import torch
 from tqdm import tqdm
+import numpy as np
+from PIL import Image
 
-from ..network import create_network_client, DataCompression
-from ..network.encryption import HomomorphicEncryption, create_encryption
 from .base import BaseExperiment, ProcessingTimes
+from ..network import DataCompression, create_network_client
+from ..network.encryption import TensorEncryption
 
 logger = logging.getLogger("split_computing_logger")
 
 
 class NetworkedExperiment(BaseExperiment):
-    """Class for running experiments with networked split computing."""
+    """Client-side distributed experiment that offloads computation to a server."""
 
     def __init__(
         self, 
@@ -45,16 +39,13 @@ class NetworkedExperiment(BaseExperiment):
         encryption_scale: int = 26
     ):
         """
-        Initialize the networked experiment with server connection and compression setup.
+        Initialize the networked experiment for distributed neural network processing.
         
-        Args:
-            config: Experiment configuration dictionary
-            host: Server hostname or IP address
-            port: Server port number
-            encryption_password: Optional password for encryption
-            encryption_key_file: Optional path to encryption key file
-            encryption_degree: Polynomial modulus degree for encryption
-            encryption_scale: Bit scale for encryption precision
+        This class sets up:
+        1. Model splitting configuration
+        2. Network communication to server
+        3. Tensor compression for efficient transmission
+        4. Optional encryption for secure tensor sharing
         """
         super().__init__(config, host, port)
 
@@ -64,64 +55,65 @@ class NetworkedExperiment(BaseExperiment):
         if not hasattr(self, "layer_timing_data"):
             self.layer_timing_data = {}
 
-        # Configure compression settings for tensor transmission
-        if "compression" not in self.config:
-            self.config["compression"] = {
+        # Set compression configuration for efficient tensor transmission
+        self.compression_config = self.config.get("compression", {})
+        if not self.compression_config:
+            # Default compression configuration optimized for neural network tensors
+            self.compression_config = {
                 "clevel": 3,  # Compression level (higher = smaller size but slower)
                 "filter": "SHUFFLE",  # Data pre-conditioning filter
                 "codec": "ZSTD",  # Compression algorithm
             }
 
-        # Initialize encryption if parameters are provided
+        # Store encryption parameters for lazy initialization (NO encryption during setup)
         self.encryption = None
-        if encryption_password or encryption_key_file:
-            try:
-                logger.info("Initializing tensor encryption...")
-                self.encryption = create_encryption(
-                    password=encryption_password,
-                    key_file=encryption_key_file,
-                    generate_new=(not encryption_password and not encryption_key_file),
-                    poly_modulus_degree=encryption_degree,
-                    bit_scale=encryption_scale
-                )
-                logger.info(f"Tensor encryption initialized successfully with degree={encryption_degree}, scale={encryption_scale}")
-            except Exception as e:
-                logger.error(f"Failed to initialize encryption: {e}", exc_info=True)
-                # Continue without encryption
-                logger.warning("Continuing without encryption due to initialization failure")
-        else:
-            logger.info("Tensor encryption is disabled")
+        self.encryption_initialized = False
+        
+        # Store encryption settings without initializing anything heavy
+        encryption_config = self.config.get("encryption", {})
+        self.encryption_enabled = encryption_config.get("enabled", False)
+        self.encryption_mode = encryption_config.get("mode", "transmission")
+        self.encryption_password = encryption_config.get("password") or encryption_password
+        self.encryption_key_file = encryption_config.get("key_file") or encryption_key_file
+        self.encryption_degree = encryption_config.get("degree", encryption_degree)
+        self.encryption_scale = encryption_config.get("scale", encryption_scale)
+        
+        # Check if encryption will be needed later (without initializing it now)
+        self.encryption_requested = (self.encryption_enabled or 
+                                   self.encryption_password is not None or 
+                                   self.encryption_key_file is not None or
+                                   encryption_degree != 8192 or encryption_scale != 26)
+        
+        # No logging about encryption during initialization to keep logs identical
 
-        # Setup network client for tensor sharing with the server
+        # Setup network client for tensor sharing with the server (no encryption during setup)
         try:
             logger.info(f"Creating network client to connect to {host}:{port}")
-            # Pass encryption to network client if available
+            # Create client without encryption during initialization
             self.network_client = create_network_client(
                 config=self.config, 
                 host=host, 
                 port=port,
-                encryption=self.encryption
+                encryption=None  # No encryption during setup
             )
             logger.info("Network client created successfully")
         except Exception as e:
             logger.error(f"Failed to create network client: {e}", exc_info=True)
             raise
 
-        # Initialize data compression for efficient tensor transmission over the network
+        # Initialize data compression for efficient tensor transmission (no encryption during setup)
         try:
             compression_config = self.config.get("compression", {})
             logger.info(
                 f"Initializing data compression with config: {compression_config}"
             )
-            # Pass encryption to DataCompression if available
+            # Initialize without encryption during setup
             self.compress_data = DataCompression(
                 compression_config,
-                encryption=self.encryption
+                encryption=None,  # No encryption during setup
+                encryption_mode="transmission"
             )
-            if self.encryption:
-                logger.info("Data compression with encryption initialized successfully")
-            else:
-                logger.info("Data compression without encryption initialized successfully")
+            logger.info("Data compression without encryption initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize data compression: {e}", exc_info=True)
             raise
@@ -134,6 +126,51 @@ class NetworkedExperiment(BaseExperiment):
         if self.can_monitor_battery and self.collect_metrics:
             self.initial_battery_percent = psutil.sensors_battery().percent
             logger.info(f"Initial battery percentage: {self.initial_battery_percent}%")
+
+    def _ensure_encryption_initialized(self):
+        """Lazily initialize encryption only when needed for tensor transmission."""
+        if self.encryption_requested and not self.encryption_initialized:
+            try:
+                logger.info(f"Initializing tensor encryption for transmission in {self.encryption_mode} mode...")
+                
+                if self.encryption_password:
+                    # Create encryption from password
+                    self.encryption = TensorEncryption.from_password(
+                        password=self.encryption_password,
+                        mode=self.encryption_mode,
+                        degree=self.encryption_degree,
+                        scale=self.encryption_scale
+                    )
+                elif self.encryption_key_file:
+                    logger.warning("Key file-based encryption not yet implemented with new TensorEncryption")
+                    # For now, generate a new encryption instance
+                    self.encryption = TensorEncryption(
+                        mode=self.encryption_mode,
+                        degree=self.encryption_degree,
+                        scale=self.encryption_scale
+                    )
+                else:
+                    # Generate new encryption instance (server-generated encryption)
+                    logger.info("No password or key file provided, generating new encryption keys")
+                    self.encryption = TensorEncryption(
+                        mode=self.encryption_mode,
+                        degree=self.encryption_degree,
+                        scale=self.encryption_scale
+                    )
+                
+                # Update network client and data compression with encryption
+                self.network_client.encryption = self.encryption
+                self.compress_data.encryption = self.encryption
+                self.compress_data.encryption_mode = self.encryption_mode
+                
+                self.encryption_initialized = True
+                logger.info(f"Tensor encryption initialized successfully with mode={self.encryption_mode}")
+            except Exception as e:
+                logger.error(f"Failed to initialize encryption: {e}", exc_info=True)
+                # Continue without encryption
+                logger.warning("Continuing without encryption due to initialization failure")
+                self.encryption = None
+                self.encryption_requested = False
 
     def process_single_image(
         self,
@@ -152,50 +189,19 @@ class NetworkedExperiment(BaseExperiment):
         4. Process results locally and optionally save visualization
         """
         try:
-            # ===== ENCRYPTION PHASE =====
-            # If encryption is enabled, encrypt the input tensor before any processing
-            encryption_metadata = None
-            original_inputs = None
+            # ===== LAZY ENCRYPTION INITIALIZATION =====
+            # Initialize encryption only when needed for tensor transmission
+            self._ensure_encryption_initialized()
             
-            if self.encryption:
-                logger.info(f"Encrypting input tensor for end-to-end processing")
-                # Store original inputs for visualization purposes if needed
-                original_inputs = inputs.clone()
-                
-                try:
-                    # Convert tensor to bytes for encryption
-                    # This is a simplified approach - in practice you'd need to handle tensor structure
-                    import io
-                    import torch
-                    
-                    # Detach from computation graph and move to CPU if needed
-                    tensor_to_encrypt = inputs.detach().cpu()
-                    
-                    # Serialize tensor
-                    buffer = io.BytesIO()
-                    torch.save(tensor_to_encrypt, buffer)
-                    tensor_bytes = buffer.getvalue()
-                    
-                    # Encrypt the serialized tensor
-                    encrypted_bytes, encryption_metadata = self.encryption.encrypt(tensor_bytes)
-                    logger.info(f"Successfully encrypted input tensor. Using encrypted data for processing.")
-                    
-                    # Store encrypted form for later reference
-                    # This is needed for properly handling encrypted data through the pipeline
-                    self._input_encrypted = True
-                    self._encryption_metadata = encryption_metadata
-                    
-                    # Note: In a complete implementation, you would need to:
-                    # 1. Convert encrypted bytes back to a tensor representation
-                    # 2. Override normal tensor operations to work with encrypted data
-                    # This would require specialized neural network operations for encrypted data
-                    
-                    # For demonstration, we use original inputs but track encryption
-                    # In a real encrypted inference system, you'd use encrypted tensor ops
-                except Exception as e:
-                    logger.error(f"Failed to encrypt input tensor: {e}", exc_info=True)
-                    logger.warning("Proceeding with unencrypted tensor")
-                    self._input_encrypted = False
+            # ===== ENCRYPTION PREPARATION =====
+            original_inputs = inputs.clone() if self.encryption else None
+            
+            if self.encryption and self.encryption.mode == "full":
+                logger.info(f"Using homomorphic encryption for end-to-end secure processing")
+                self._input_encrypted = True
+            elif self.encryption and self.encryption.mode == "transmission":
+                logger.info(f"Using transmission encryption for secure data transfer")
+                self._input_encrypted = True
             else:
                 self._input_encrypted = False
             
@@ -225,11 +231,10 @@ class NetworkedExperiment(BaseExperiment):
                 else (0, 0)
             )
             
-            # Use encrypted tensor throughout the pipeline
+            # Create data package for transmission
             data_to_send = (output, original_size)
 
-            # Compress the tensor package to reduce network transfer size and time
-            # Note: If tensor is already encrypted, the compression module will handle it properly
+            # Compress (and encrypt if enabled) the tensor package
             compressed_output, output_size = self.compress_data.compress_data(
                 data_to_send
             )
@@ -249,55 +254,31 @@ class NetworkedExperiment(BaseExperiment):
                         return None
 
                 # Send split layer index and tensor data to server, receive processed results
-                # Server time is returned separately for accurate performance measurement
                 processed_result, server_time = (
                     self.network_client.process_split_computation(
                         split_layer, compressed_output
                     )
                 )
                 
-                # ===== DECRYPTION PHASE =====
-                # If the input was encrypted, decrypt the final result
-                if getattr(self, '_input_encrypted', False) and getattr(self, '_encryption_metadata', None) is not None:
-                    logger.info("Decrypting final prediction result")
-                    
-                    try:
-                        # The exact decryption procedure depends on result format
-                        if isinstance(processed_result, dict):
-                            # If result is a dictionary (common for predictions with metadata)
-                            if "prediction" in processed_result:
-                                # Convert prediction to bytes if needed for decryption
-                                import pickle
-                                pred_bytes = pickle.dumps(processed_result["prediction"])
-                                
-                                # Decrypt using stored metadata
-                                decrypted_bytes = self.encryption.decrypt(pred_bytes, self._encryption_metadata)
-                                
-                                # Convert back to appropriate format
-                                processed_result["prediction"] = pickle.loads(decrypted_bytes)
-                                logger.info("Successfully decrypted prediction result")
-                        elif isinstance(processed_result, (list, tuple)):
-                            # Handle case where result is a list/tuple of outputs
-                            # This is a simplified approach - more complex structures would need recursive handling
-                            import pickle
-                            result_bytes = pickle.dumps(processed_result)
-                            decrypted_bytes = self.encryption.decrypt(result_bytes, self._encryption_metadata)
-                            processed_result = pickle.loads(decrypted_bytes)
-                            logger.info("Successfully decrypted result collection")
-                        else:
-                            # Direct decryption of the result
-                            import pickle
-                            result_bytes = pickle.dumps(processed_result)
-                            decrypted_bytes = self.encryption.decrypt(result_bytes, self._encryption_metadata)
-                            processed_result = pickle.loads(decrypted_bytes)
-                            logger.info("Successfully decrypted generic result")
-                            
-                        # Clean up encryption metadata after use
-                        del self._encryption_metadata
-                        del self._input_encrypted
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt result: {e}", exc_info=True)
-                        logger.warning("Returning encrypted result")
+                # ===== DECRYPTION PHASE (if needed) =====
+                if self._input_encrypted and self.encryption:
+                    if self.encryption.mode == "full":
+                        # For homomorphic encryption (full mode), the compression module
+                        # returns the encrypted package structure. The result structure
+                        # should be: (encrypted_tensor_data, original_size)
+                        # where encrypted_tensor_data contains the encrypted result
+                        logger.info("Processing homomorphic encryption result")
+                        
+                        # The compression module already handles the format conversion
+                        # No additional decryption needed here - results remain encrypted
+                        # for homomorphic processing downstream
+                        logger.debug("Result processed for homomorphic computation")
+                    else:
+                        # For transmission mode, the compression module automatically
+                        # decrypts the result - no additional processing needed
+                        logger.debug("Result already decrypted by compression module")
+                else:
+                    logger.debug("No decryption needed - encryption not used")
             except Exception as e:
                 logger.error(f"Network processing failed: {e}", exc_info=True)
                 return None

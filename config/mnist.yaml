@@ -19,12 +19,12 @@ logging:
 # MODEL CONFIGURATIONS
 # ================================================================
 model:
-  model_name: convnet
+  model_name: mnist_convnet
   version: null
   pretrained: false
   weight_path: data/MNIST/weights/mnist.pth
   input_size: [1, 28, 28]
-  split_layer: 1
+  split_layer: 2
   save_layers: [1, 2]
   hidden_size: 64
   num_classes: 10
@@ -65,8 +65,8 @@ compression:
 # ENCRYPTION CONFIGURATIONS
 # ================================================================
 encryption:
-  enabled: true                   # Set to true to enable encryption
-  mode: "full"             # "transmission" (default) or "full" (homomorphic)
+  enabled: false                   # Set to true to enable encryption
+  mode: "transmission"             # "transmission" (default) or "full" (homomorphic)
   password: null                   # Optional password for encryption
   key_file: null                   # Optional path to encryption key file
   degree: 8192                     # Polynomial modulus degree for encryption

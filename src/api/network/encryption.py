@@ -470,4 +470,165 @@ def create_encryption(
         raise KeyManagementError(f"Failed to create encryption: {e}")
 
 # Alias for backward compatibility
-TensorEncryption = HomomorphicEncryption
+# TensorEncryption = HomomorphicEncryption
+
+class TensorEncryption:
+    """
+    Unified tensor encryption class supporting both transmission and homomorphic encryption modes.
+    
+    Supports two modes:
+    - "transmission": Encrypt for network transfer, decrypt on server before processing
+    - "full": Homomorphic encryption allowing computation on encrypted data
+    """
+    
+    def __init__(
+        self,
+        mode: str = "transmission",
+        degree: int = 8192,
+        scale: int = 26,
+        context: Optional[ts.Context] = None,
+        salt: Optional[bytes] = None
+    ):
+        """
+        Initialize TensorEncryption with specified mode and parameters.
+        
+        Args:
+            mode: "transmission" or "full"
+            degree: Polynomial modulus degree for encryption
+            scale: Bit scale for encoding precision
+            context: Optional pre-configured TenSEAL context
+            salt: Optional salt for key derivation
+        """
+        if not TENSEAL_AVAILABLE:
+            raise ImportError("TenSEAL is not available. Please install it with 'pip install tenseal'")
+            
+        self.mode = mode
+        self.degree = degree
+        self.scale = scale
+        self.salt = salt if salt is not None else os.urandom(16)
+        
+        if self.mode in ["transmission", "full"]:
+            # Initialize homomorphic encryption for both modes
+            try:
+                self.homomorphic_encryption = HomomorphicEncryption(
+                    context=context,
+                    poly_modulus_degree=degree,
+                    coeff_mod_bit_sizes=None,
+                    global_scale=2**scale,
+                    salt=self.salt
+                )
+                logger.info(f"TensorEncryption initialized in {mode} mode")
+            except Exception as e:
+                logger.error(f"Failed to initialize HomomorphicEncryption: {e}")
+                raise EncryptionError(f"Failed to initialize encryption: {e}")
+        else:
+            raise ValueError(f"Unsupported encryption mode: {mode}. Use 'transmission' or 'full'")
+    
+    @classmethod
+    def from_password(
+        cls,
+        password: str,
+        mode: str = "transmission",
+        degree: int = 8192,
+        scale: int = 26,
+        salt: Optional[bytes] = None
+    ) -> "TensorEncryption":
+        """
+        Create TensorEncryption instance from password.
+        
+        Args:
+            password: Password for key derivation
+            mode: "transmission" or "full"
+            degree: Polynomial modulus degree
+            scale: Bit scale for encoding
+            salt: Optional salt for key derivation
+            
+        Returns:
+            Configured TensorEncryption instance
+        """
+        try:
+            # Create homomorphic encryption from password
+            he = HomomorphicEncryption.from_password(
+                password=password,
+                salt=salt,
+                poly_modulus_degree=degree
+            )
+            
+            # Create TensorEncryption instance
+            instance = cls(mode=mode, degree=degree, scale=scale, salt=salt)
+            instance.homomorphic_encryption = he
+            logger.info(f"TensorEncryption created from password in {mode} mode")
+            return instance
+        except Exception as e:
+            logger.error(f"Failed to create TensorEncryption from password: {e}")
+            raise EncryptionError(f"Failed to create encryption from password: {e}")
+    
+    def encrypt(self, data: Union[bytes, np.ndarray, torch.Tensor]) -> Tuple[bytes, dict]:
+        """
+        Encrypt tensor data using the configured encryption method.
+        
+        Args:
+            data: Data to encrypt (bytes, numpy array, or PyTorch tensor)
+            
+        Returns:
+            Tuple of (encrypted_data_bytes, encryption_metadata)
+        """
+        try:
+            return self.homomorphic_encryption.encrypt(data)
+        except Exception as e:
+            logger.error(f"Encryption failed: {e}")
+            raise EncryptionError(f"Failed to encrypt data: {e}")
+    
+    def decrypt(self, encrypted_data: bytes, metadata: dict) -> bytes:
+        """
+        Decrypt tensor data using the configured encryption method.
+        
+        Args:
+            encrypted_data: Encrypted data bytes
+            metadata: Encryption metadata dictionary
+            
+        Returns:
+            Decrypted data as bytes
+        """
+        try:
+            return self.homomorphic_encryption.decrypt(encrypted_data, metadata)
+        except Exception as e:
+            logger.error(f"Decryption failed: {e}")
+            raise DecryptionError(f"Failed to decrypt data: {e}")
+    
+    def get_context(self) -> ts.Context:
+        """Get the TenSEAL context."""
+        try:
+            return self.homomorphic_encryption.get_context()
+        except Exception as e:
+            logger.error(f"Failed to get context: {e}")
+            raise EncryptionError(f"Failed to get encryption context: {e}")
+    
+    def serialize_context(self) -> bytes:
+        """Serialize the context for transmission."""
+        try:
+            return self.homomorphic_encryption.serialize_context()
+        except Exception as e:
+            logger.error(f"Failed to serialize context: {e}")
+            raise EncryptionError(f"Failed to serialize encryption context: {e}")
+    
+    def get_salt(self) -> bytes:
+        """Get the salt used for key derivation."""
+        return self.salt
+    
+    @classmethod
+    def from_serialized_context(cls, serialized_context: bytes, mode: str = "transmission") -> "TensorEncryption":
+        """Create TensorEncryption instance from serialized context."""
+        try:
+            he = HomomorphicEncryption.from_serialized_context(serialized_context)
+            instance = cls(mode=mode)
+            instance.homomorphic_encryption = he
+            logger.info(f"TensorEncryption created from serialized context in {mode} mode")
+            return instance
+        except Exception as e:
+            logger.error(f"Failed to create TensorEncryption from serialized context: {e}")
+            raise EncryptionError(f"Failed to create encryption from context: {e}")
+    
+    def is_available(self) -> bool:
+        """Check if encryption is available and properly initialized."""
+        return hasattr(self, 'homomorphic_encryption') and self.homomorphic_encryption is not None

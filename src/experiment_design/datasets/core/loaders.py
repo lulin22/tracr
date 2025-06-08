@@ -49,6 +49,13 @@ class DatasetRegistry:
             "description": "MNIST dataset for handwritten digit classification",
             "requires_config": ["root"],
         },
+        "cifar10": {
+            "module_path": "..cifar10",
+            "loader_function": "load_cifar10_dataset",
+            "type": "image",
+            "description": "CIFAR-10 dataset for image classification",
+            "requires_config": ["root"],
+        },
     }
 
     @classmethod

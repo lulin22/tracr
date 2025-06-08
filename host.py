@@ -56,7 +56,9 @@ def parse_arguments() -> argparse.Namespace:
     encryption_group = parser.add_argument_group('Encryption Options')
     encryption_group.add_argument(
         "--encrypt",
-        action="store_true",
+        action="store_const",
+        const=True,
+        default=None,
         help="Enable tensor encryption for secure transmission",
     )
     encryption_group.add_argument(
@@ -279,12 +281,23 @@ class ExperimentHost:
             config_degree = config_encryption.get("degree", 8192)
             config_scale = config_encryption.get("scale", 26)
             
+            # Debug logging for config values
+            logger.info(f"Config encryption: {config_encryption}")
+            logger.info(f"Config password: {config_password}")
+            logger.info(f"Config key file: {config_key_file}")
+            logger.info(f"Encryption args: {self.encryption_args}")
+            
             # Command-line args override config settings if specified
-            encryption_enabled = self.encryption_args.get('encrypt', config_enabled)
-            encryption_password = self.encryption_args.get('encryption_password', config_password)
-            encryption_key_file = self.encryption_args.get('encryption_key_file', config_key_file)
-            encryption_degree = self.encryption_args.get('encryption_degree', config_degree)
-            encryption_scale = self.encryption_args.get('encryption_scale', config_scale)
+            encryption_enabled = self.encryption_args.get('encrypt') if self.encryption_args.get('encrypt') is not None else config_enabled
+            encryption_password = self.encryption_args.get('encryption_password') or config_password
+            encryption_key_file = self.encryption_args.get('encryption_key_file') or config_key_file
+            encryption_degree = self.encryption_args.get('encryption_degree') or config_degree
+            encryption_scale = self.encryption_args.get('encryption_scale') or config_scale
+            
+            # Debug logging for final values
+            logger.info(f"Final encryption enabled: {encryption_enabled}")
+            logger.info(f"Final encryption password: {encryption_password}")
+            logger.info(f"Final encryption key file: {encryption_key_file}")
             
             # Log encryption settings
             if encryption_enabled:

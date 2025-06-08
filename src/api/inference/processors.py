@@ -78,17 +78,27 @@ class ImageNetProcessor(ModelProcessor):
         transformation. The tensor is processed to extract the most likely class
         and its associated confidence score.
         """
-        # Process the output tensor through the predictor
-        predictions = self.predictor.predict_top_k(output)
-        self.predictor.log_predictions(predictions)
+        try:
+            # Process the output tensor through the predictor
+            predictions = self.predictor.predict_top_k(output)
+            self.predictor.log_predictions(predictions)
 
-        # Extract the top prediction for the result
-        top_pred = predictions[0]
-        logger.info(
-            f"Top prediction: {top_pred[0]} with confidence {round(top_pred[1], 2)}"
-        )
-
-        return {"class_name": top_pred[0], "confidence": top_pred[1]}
+            # Extract the top prediction for the result
+            if predictions and len(predictions) > 0:
+                top_pred = predictions[0]
+                logger.info(
+                    f"Top prediction: {top_pred[0]} with confidence {round(top_pred[1], 2)}"
+                )
+                return {"class_name": top_pred[0], "confidence": top_pred[1]}
+            else:
+                logger.warning("No predictions returned from predictor")
+                return {"class_name": "Unknown", "confidence": 0.0}
+                
+        except Exception as e:
+            logger.error(f"Error in process_output: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"class_name": "Error", "confidence": 0.0}
 
     def visualize_result(
         self,
@@ -97,10 +107,25 @@ class ImageNetProcessor(ModelProcessor):
         true_class: Optional[str] = None,
     ) -> Image.Image:
         """Visualize the classification result on the image."""
+        # Check for class_name directly first (original structure)
+        if "class_name" in result:
+            pred_class = result["class_name"]
+            confidence = result.get("confidence", 0.0)
+        elif "processed_result" in result:
+            # Fall back to processed_result structure (encrypted case)
+            processed_data = result["processed_result"]
+            pred_class = processed_data.get("class_name", "Unknown")
+            confidence = processed_data.get("confidence", 0.0)
+        else:
+            # No valid structure found
+            pred_class = "Unknown"
+            confidence = 0.0
+            logger.warning(f"Missing both 'class_name' and 'processed_result' in result: {result}")
+            
         return self.visualizer.draw_classification_result(
             image=image,
-            pred_class=result["class_name"],
-            confidence=result["confidence"],
+            pred_class=pred_class,
+            confidence=confidence,
             true_class=true_class,
         )
 

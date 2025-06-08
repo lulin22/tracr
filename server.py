@@ -207,56 +207,86 @@ class Server:
 
     def _setup_compression(self) -> None:
         """Initialize compression with minimal settings for optimal performance."""
-        self.compress_data = DataCompression(SERVER_COMPRESSION_SETTINGS)
         
-        # Check for homomorphic encryption configuration
+        # Initialize encryption if enabled
         self.encryption = None
         
-        try:
-            from src.api.network.encryption import HomomorphicEncryption, create_encryption
-            
-            # Check if encryption was explicitly enabled via command line
-            if self.enable_encryption:
+        if self.enable_encryption:
+            try:
+                from src.api.network.encryption import TensorEncryption
+                
+                # Determine encryption mode from config or default to transmission
+                encryption_mode = "transmission"  # Default mode
+                
+                if hasattr(self, 'config') and self.config:
+                    encryption_config = self.config.get("encryption", {})
+                    encryption_mode = encryption_config.get("mode", "transmission")
+                
+                logger.info(f"Initializing server encryption in {encryption_mode} mode...")
+                
                 if self.encryption_key_file:
                     # Use specified key file from command line
                     logger.info(f"Using encryption key file: {self.encryption_key_file}")
-                    self.encryption = create_encryption(
-                        key_file=self.encryption_key_file,
-                        poly_modulus_degree=self.encryption_degree,
-                        bit_scale=self.encryption_scale
+                    logger.warning("Key file-based encryption not yet implemented with new TensorEncryption")
+                    # For now, generate a new encryption instance
+                    self.encryption = TensorEncryption(
+                        mode=encryption_mode,
+                        degree=self.encryption_degree,
+                        scale=self.encryption_scale
                     )
                 elif self.encryption_password:
                     # Use specified password from command line
                     logger.info("Using encryption with password")
-                    self.encryption = create_encryption(
+                    self.encryption = TensorEncryption.from_password(
                         password=self.encryption_password,
-                        poly_modulus_degree=self.encryption_degree,
-                        bit_scale=self.encryption_scale
+                        mode=encryption_mode,
+                        degree=self.encryption_degree,
+                        scale=self.encryption_scale
                     )
                 else:
-                    # Generate new encryption key if no specific method provided
+                    # Generate new encryption instance if no specific method provided
                     logger.info("Generating new encryption context")
-                    self.encryption = create_encryption(
-                        generate_new=True,
-                        poly_modulus_degree=self.encryption_degree,
-                        bit_scale=self.encryption_scale
+                    self.encryption = TensorEncryption(
+                        mode=encryption_mode,
+                        degree=self.encryption_degree,
+                        scale=self.encryption_scale
                     )
-            # Fallback to environment variable if not explicitly enabled
-            elif os.environ.get("SPLIT_COMPUTE_ENCRYPTION_KEY"):
+                
+                logger.info(f"Server encryption initialized successfully with mode={encryption_mode}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to initialize encryption: {e}")
+                self.encryption = None
+        
+        # Fallback to environment variable if not explicitly enabled
+        elif os.environ.get("SPLIT_COMPUTE_ENCRYPTION_KEY"):
+            try:
+                from src.api.network.encryption import TensorEncryption
+                
                 encryption_key_file = os.environ.get("SPLIT_COMPUTE_ENCRYPTION_KEY")
                 if os.path.exists(encryption_key_file):
                     logger.info(f"Using encryption key from environment: {encryption_key_file}")
-                    self.encryption = create_encryption(key_file=encryption_key_file)
-            
-            # Update compression with encryption if available
-            if self.encryption:
-                self.compress_data = DataCompression(
-                    SERVER_COMPRESSION_SETTINGS, 
-                    encryption=self.encryption
-                )
-                logger.info("Homomorphic encryption enabled for secure tensor processing")
-        except Exception as e:
-            logger.error(f"Failed to initialize encryption: {e}")
+                    logger.warning("Key file-based encryption not yet implemented with new TensorEncryption")
+                    # For now, generate a new encryption instance
+                    self.encryption = TensorEncryption(
+                        mode="transmission",  # Default for environment-based setup
+                        degree=self.encryption_degree,
+                        scale=self.encryption_scale
+                    )
+            except Exception as e:
+                logger.error(f"Failed to initialize encryption from environment: {e}")
+                self.encryption = None
+        
+        # Initialize compression (always needed)
+        self.compress_data = DataCompression(
+            SERVER_COMPRESSION_SETTINGS, 
+            encryption=self.encryption
+        )
+        
+        if self.encryption:
+            logger.info(f"Homomorphic encryption enabled for secure tensor processing in {self.encryption.mode} mode")
+        else:
+            logger.info("Compression initialized without encryption")
         
         logger.debug("Initialized compression with minimal settings")
 
@@ -493,17 +523,28 @@ class Server:
                     encryption_config = config["encryption"]
                     if "context" in encryption_config:
                         try:
-                            from src.api.network.encryption import HomomorphicEncryption
+                            from src.api.network.encryption import TensorEncryption
                             serialized_context = encryption_config["context"]
-                            # Create encryption module from received context
-                            self.encryption = HomomorphicEncryption.from_serialized_context(serialized_context)
-                            logger.info("Received homomorphic encryption context from client")
                             
-                            # Update compression to use encryption
-                            self._update_compression(config)
-                            logger.info("Updated compression with client encryption context")
+                            # Properly deserialize the client's encryption context
+                            logger.info("Deserializing encryption context from client...")
+                            
+                            encryption_mode = encryption_config.get("mode", "transmission")
+                            
+                            # Use the from_serialized_context method to create compatible encryption
+                            server_encryption = TensorEncryption.from_serialized_context(
+                                serialized_context, 
+                                mode=encryption_mode
+                            )
+                            
+                            # Update the server's encryption for this session
+                            self.encryption = server_encryption
+                            logger.info(f"Successfully initialized server encryption from client context in {encryption_mode} mode")
+                            
                         except Exception as e:
                             logger.error(f"Failed to initialize encryption from client context: {e}")
+                            logger.warning("Continuing without encryption synchronization")
+                            # Don't raise here - continue without encryption to allow connection to proceed
                 
                 return config
             except Exception as e:
@@ -600,6 +641,10 @@ class Server:
             # Send acknowledgment to the client - must be exactly b"OK"
             conn.sendall(ACK_MESSAGE)
             logger.debug("Sent 'OK' acknowledgment to client")
+            
+            # Send READY signal after full initialization (encryption + model loading complete)
+            conn.sendall(b"READY")
+            logger.debug("Sent 'READY' signal to client - server fully initialized")
 
             # Process incoming data in a loop
             while True:
