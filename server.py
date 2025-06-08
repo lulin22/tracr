@@ -630,6 +630,12 @@ class Server:
                 self.experiment_manager = ExperimentManager(config)
                 experiment = self.experiment_manager.setup_experiment()
                 experiment.model.eval()
+                
+                # Pass encryption instance to experiment for homomorphic processing
+                if self.encryption:
+                    experiment.encryption = self.encryption
+                    logger.info("Passed encryption instance to experiment for homomorphic operations")
+                
                 logger.info("Experiment initialized successfully with received config")
             except Exception as e:
                 logger.error(f"Failed to initialize experiment: {e}")
