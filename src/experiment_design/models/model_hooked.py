@@ -53,6 +53,13 @@ class WrappedModel(BaseModel, ModelInterface):
         ModelInterface.__init__(self, config)
         logger.debug(f"Initializing WrappedModel with config: {config}")
 
+        # Set environment variable for encryption mode detection (backup method)
+        encryption_config = config.get("encryption", {})
+        if encryption_config.get("enabled", False) and encryption_config.get("mode") == "full":
+            import os
+            os.environ["TENSOR_ENCRYPTION_MODE"] = "full"
+            logger.debug("Set TENSOR_ENCRYPTION_MODE=full for model detection")
+
         # Get device from config that was validated upstream in server.py/host.py
         self.device = config.get("default", {}).get("device", "cpu")
 

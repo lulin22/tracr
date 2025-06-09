@@ -181,6 +181,7 @@ class BaseModel(nn.Module):
                 model_name=self.model_name,
                 model_config=self.model_config,
                 dataset_config=self.dataset_config,
+                full_config=self.config  # Pass the full config so models can access encryption settings
             )
         except Exception as e:
             logger.error(f"Failed to load model '{self.model_name}': {e}")

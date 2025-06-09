@@ -40,6 +40,7 @@ from pathlib import Path
 import logging
 import numpy as np
 from typing import Union
+import os
 
 from .core.registry import ModelRegistry
 
@@ -55,14 +56,15 @@ class CIFARConvNet(nn.Module):
     - HE-friendly mode: Uses square activations, AvgPool2d, and simplified operations
     """
     
-    def __init__(self, model_config=None, **kwargs):
+    def __init__(self, model_config=None, dataset_config=None, **kwargs):
         """Initialize the model.
         
         Args:
             model_config: Configuration dictionary containing model parameters
                 - use_he_friendly: Boolean to enable HE-compatible operations
                 - encryption: Dict containing encryption settings
-            **kwargs: Additional keyword arguments
+            dataset_config: Dataset configuration (not used but may be passed)
+            **kwargs: Additional keyword arguments, may include 'full_config'
         """
         super(CIFARConvNet, self).__init__()
         
@@ -81,7 +83,7 @@ class CIFARConvNet(nn.Module):
         if model_config.get("use_he_friendly", False):
             self.use_he_friendly = True
             
-        # Method 2: Check encryption config for "full" mode
+        # Method 2: Check encryption config for "full" mode (in model_config)
         encryption_config = model_config.get("encryption", {})
         if encryption_config.get("enabled", False) and encryption_config.get("mode") == "full":
             self.use_he_friendly = True
@@ -90,6 +92,19 @@ class CIFARConvNet(nn.Module):
         # Method 3: Check if global encryption mode is set to full
         if hasattr(model_config, 'get') and model_config.get("global_encryption_mode") == "full":
             self.use_he_friendly = True
+            
+        # Method 4: Check full config if passed through kwargs (NEW!)
+        full_config = kwargs.get('full_config') or kwargs.get('config')
+        if full_config and isinstance(full_config, dict):
+            full_encryption_config = full_config.get("encryption", {})
+            if full_encryption_config.get("enabled", False) and full_encryption_config.get("mode") == "full":
+                self.use_he_friendly = True
+                logger.info("Enabling HE-friendly mode due to full encryption configuration in kwargs")
+                
+        # Method 5: Environment variable fallback (NEW!)
+        if os.environ.get("TENSOR_ENCRYPTION_MODE") == "full":
+            self.use_he_friendly = True
+            logger.info("Enabling HE-friendly mode due to environment variable TENSOR_ENCRYPTION_MODE=full")
             
         logger.info(f"CIFAR ConvNet initialized with HE-friendly mode: {self.use_he_friendly}")
         

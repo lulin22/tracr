@@ -113,10 +113,29 @@ class DataCompression:
                 # expected (tensor, original_size) tuple produced by the pipeline.
                 if isinstance(data, tuple) and len(data) == 2:
                     tensor_data, original_size = data
+                    
+                    # Extract actual tensor - handle both torch.Tensor and EarlyOutput
+                    actual_tensor = None
                     if isinstance(tensor_data, torch.Tensor):
-                        # Encrypt tensor using helper utility
+                        actual_tensor = tensor_data
+                    elif hasattr(tensor_data, 'inner_dict'):
+                        # Handle EarlyOutput objects by extracting the tensor
+                        inner_data = tensor_data.inner_dict
+                        if isinstance(inner_data, torch.Tensor):
+                            actual_tensor = inner_data
+                            logger.debug("Extracted tensor from EarlyOutput for encryption")
+                        elif isinstance(inner_data, dict):
+                            # EarlyOutput contains a dictionary of tensors - use the last one
+                            if inner_data:
+                                max_key = max(inner_data.keys())
+                                if isinstance(inner_data[max_key], torch.Tensor):
+                                    actual_tensor = inner_data[max_key]
+                                    logger.debug(f"Extracted tensor from EarlyOutput dict layer {max_key} for encryption")
+                    
+                    if actual_tensor is not None:
+                        # Encrypt the extracted tensor using helper utility
                         from ..utils.tensor_encryption import encrypt_tensor
-                        encrypted_tensor_data = encrypt_tensor(tensor_data, self.encryption)
+                        encrypted_tensor_data = encrypt_tensor(actual_tensor, self.encryption)
 
                         # Mark payload with encryption mode for downstream logic
                         payload: Dict[str, Any] = {
@@ -125,8 +144,10 @@ class DataCompression:
                             "is_encrypted": True,
                             "encryption_mode": self.encryption.mode,
                         }
+                        logger.debug(f"Successfully encrypted tensor data in {self.encryption.mode} mode")
                     else:
-                        # Not a tensor—fallback to regular serialization path
+                        # Could not extract a tensor—fallback to regular serialization path
+                        logger.warning(f"Could not extract tensor from data type {type(tensor_data)} for encryption")
                         payload = data
                 else:
                     # Non-standard payload (e.g. inference result). Do not encrypt – just forward.
@@ -176,11 +197,12 @@ class DataCompression:
             if isinstance(deserialized, dict) and deserialized.get("is_encrypted"):
                 mode = deserialized.get("encryption_mode", "transmission")
                 if mode == "transmission":
-                    # Decrypt immediately and return plain tensor tuple
+                    # TRANSMISSION MODE: Decrypt immediately and return plain tensor tuple
+                    logger.info("🔓 TRANSMISSION MODE: Decompressing and decrypting tensor for regular network processing")
                     return self.decrypt_encrypted_package(deserialized)
                 elif mode == "full":
-                    # Return encrypted package in expected (tensor_data, original_size) format
-                    # The encrypted_tensor will be processed by homomorphic-aware components
+                    # FULL MODE: Return encrypted package without decryption for homomorphic processing
+                    logger.info("🔐 FULL MODE: Decompressing but keeping tensor encrypted for homomorphic network processing")
                     encrypted_tensor_data = deserialized["encrypted_tensor"]
                     original_size = deserialized["original_size"]
                     return (encrypted_tensor_data, original_size)
@@ -213,10 +235,12 @@ class DataCompression:
 
         # Transmission mode → decrypt to plain tensor
         if mode == "transmission":
+            logger.debug("🔓 Decrypting tensor for transmission mode - converting to plain tensor")
             decrypted_tensor = decrypt_tensor(encrypted_tensor_data, self.encryption)
             return (decrypted_tensor, original_size)
         # Full mode → return the encrypted package (server should not decrypt)
         elif mode == "full":
+            logger.debug("🔐 Keeping tensor encrypted for full mode - returning encrypted package")
             return encrypted_package  # Caller decides how to handle
         else:
             raise ValueError(f"Unknown encryption mode: {mode}")
