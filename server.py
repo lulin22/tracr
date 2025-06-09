@@ -768,6 +768,10 @@ class Server:
         # Check encryption mode from config (default to "transmission")
         encryption_mode = config.get("encryption", {}).get("mode", "transmission")
         
+        # Debug logging to trace encryption state
+        logger.info(f"🔧 _update_compression: self.encryption = {self.encryption is not None}")
+        logger.info(f"🔧 _update_compression: encryption_mode = {encryption_mode}")
+        
         if "compression" in config:
             logger.debug(f"Updating compression settings: {config['compression']}")
             
