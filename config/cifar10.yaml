@@ -73,8 +73,8 @@ compression:
 # ENCRYPTION CONFIGURATIONS
 # ================================================================
 encryption:
-  enabled: flase                    # Set to true to enable encryption
-  mode: "full"                     # "transmission" or "full" 
+  enabled: true                    # Set to true to enable encryption
+  mode: "transmission"                     # "transmission" or "full" 
                                   # transmission: Encrypt during transport, decrypt on server, use regular network (ReLU, MaxPool)
                                   # full: Keep encrypted on server, use HE-compatible network (square activations, AvgPool)
   password: null                   # Optional password for encryption

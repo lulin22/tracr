@@ -68,26 +68,41 @@ class DataCompression:
 
     def __init__(self, config: Dict[str, Any], encryption: Optional[TensorEncryption] = None, encryption_mode: str = "transmission") -> None:
         """
-        Initialize compression and encryption engine with configuration.
-        
+        Initialize tensor compression with optional encryption support.
+
         Args:
-            config: Compression configuration
-            encryption: Optional encryption module for secure tensor transmission
-            encryption_mode: Mode for encryption handling ("transmission" or "full")
+            config: Compression parameters (clevel, filter, codec)
+            encryption: Optional TensorEncryption instance for secure tensor sharing
+            encryption_mode: Mode for encryption behavior ("transmission" or "full")
         """
         self.config = CompressionConfig(
             clevel=config.get("clevel", 3),
-            filter=config.get("filter", "NOSHUFFLE"),
+            filter=config.get("filter", "SHUFFLE"),
             codec=config.get("codec", "ZSTD"),
         )
-        # Map string parameters to actual blosc2 enum values for direct API use
-        self._filter = blosc2.Filter[self.config.filter]
-        self._codec = blosc2.Codec[self.config.codec]
-        
-        # Store encryption module if provided
         self.encryption = encryption
-        self.encryption_enabled = encryption is not None
         self.encryption_mode = encryption_mode
+
+        # Convert string filter names to Blosc2 constants
+        filter_mapping = {
+            "NOSHUFFLE": blosc2.Filter.NOFILTER,  # Map NOSHUFFLE to NOFILTER
+            "SHUFFLE": blosc2.Filter.SHUFFLE,
+            "BITSHUFFLE": blosc2.Filter.BITSHUFFLE,
+        }
+        self._filter = filter_mapping.get(self.config.filter, blosc2.Filter.SHUFFLE)
+
+        # Convert string codec names to Blosc2 constants
+        codec_mapping = {
+            "ZSTD": blosc2.Codec.ZSTD,
+            "LZ4": blosc2.Codec.LZ4,
+            "BLOSCLZ": blosc2.Codec.BLOSCLZ,
+        }
+        self._codec = codec_mapping.get(self.config.codec, blosc2.Codec.ZSTD)
+
+    @property
+    def encryption_enabled(self) -> bool:
+        """Check if encryption is available and properly configured."""
+        return self.encryption is not None and hasattr(self.encryption, 'mode')
 
     def compress_data(self, data: Any) -> Tuple[bytes, int]:
         """
@@ -104,10 +119,14 @@ class DataCompression:
         4. Compress the serialized bytes with Blosc2 for efficient transfer.
         """
         try:
+            # Debug: Show compression call and encryption status
+            logger.info(f"📦 compress_data called - encryption={self.encryption is not None}, encryption_enabled={self.encryption_enabled}")
+            
             # -------------------------------------------------------------
             # STEP 1: build the payload to be serialized
             # -------------------------------------------------------------
             if self.encryption_enabled:
+                logger.info(f"🔐 Compression with encryption enabled (mode: {self.encryption.mode})")
                 import torch  # Local import to avoid mandatory torch when unused
                 # We only attempt to encrypt if the incoming payload matches the
                 # expected (tensor, original_size) tuple produced by the pipeline.
@@ -123,14 +142,14 @@ class DataCompression:
                         inner_data = tensor_data.inner_dict
                         if isinstance(inner_data, torch.Tensor):
                             actual_tensor = inner_data
-                            logger.debug("Extracted tensor from EarlyOutput for encryption")
+                            logger.info("🔍 Extracted tensor from EarlyOutput for encryption")
                         elif isinstance(inner_data, dict):
                             # EarlyOutput contains a dictionary of tensors - use the last one
                             if inner_data:
                                 max_key = max(inner_data.keys())
                                 if isinstance(inner_data[max_key], torch.Tensor):
                                     actual_tensor = inner_data[max_key]
-                                    logger.debug(f"Extracted tensor from EarlyOutput dict layer {max_key} for encryption")
+                                    logger.info(f"🔍 Extracted tensor from EarlyOutput dict layer {max_key} for encryption")
                     
                     if actual_tensor is not None:
                         # Encrypt the extracted tensor using helper utility
@@ -144,7 +163,7 @@ class DataCompression:
                             "is_encrypted": True,
                             "encryption_mode": self.encryption.mode,
                         }
-                        logger.debug(f"Successfully encrypted tensor data in {self.encryption.mode} mode")
+                        logger.info(f"✅ Successfully encrypted tensor data in {self.encryption.mode} mode")
                     else:
                         # Could not extract a tensor—fallback to regular serialization path
                         logger.warning(f"Could not extract tensor from data type {type(tensor_data)} for encryption")

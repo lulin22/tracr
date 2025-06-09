@@ -81,8 +81,13 @@ class NetworkedExperiment(BaseExperiment):
         # Check if encryption will be needed later (without initializing it now)
         self.encryption_requested = (self.encryption_enabled or 
                                    self.encryption_password is not None or 
-                                   self.encryption_key_file is not None or
-                                   encryption_degree != 8192 or encryption_scale != 26)
+                                   self.encryption_key_file is not None)
+        
+        # Log encryption status for debugging
+        logger.info(f"Encryption enabled in config: {self.encryption_enabled}")
+        logger.info(f"Encryption password provided: {self.encryption_password is not None}")
+        logger.info(f"Encryption key file provided: {self.encryption_key_file is not None}")
+        logger.info(f"Encryption requested: {self.encryption_requested}")
         
         # No logging about encryption during initialization to keep logs identical
 
