@@ -37,12 +37,18 @@ def encrypt_tensor(tensor: torch.Tensor, encryption_instance: 'TensorEncryption'
             # Use actual homomorphic encryption
             encrypted_data, metadata = encryption_instance.encrypt(tensor)
             
+            # Ensure shape is included in metadata
+            if "shape" not in metadata:
+                metadata["shape"] = list(tensor.shape)
+            
             # Return in expected format
             return {
                 "encrypted_data": encrypted_data,
                 "metadata": metadata,
                 "is_encrypted": True,
-                "encryption_type": "homomorphic"
+                "encryption_type": "homomorphic",
+                "shape": list(tensor.shape),  # Explicitly include shape
+                "dtype": str(tensor.dtype)    # Explicitly include dtype
             }
         else:
             # Fallback to placeholder (for testing/development)
@@ -53,16 +59,13 @@ def encrypt_tensor(tensor: torch.Tensor, encryption_instance: 'TensorEncryption'
             tensor_bytes = tensor_numpy.tobytes()
             
             # Store metadata needed for reconstruction
-            encrypted_data = {
-                "encrypted_data": tensor_bytes,  # In a real implementation, this would be encrypted
+            return {
+                "encrypted_data": tensor_bytes,
                 "shape": list(tensor.shape),
                 "dtype": str(tensor.dtype),
                 "is_encrypted": True,
                 "encryption_type": "placeholder"
             }
-            
-            logger.debug(f"Encrypted tensor of shape {tensor.shape} and dtype {tensor.dtype}")
-            return encrypted_data
         
     except Exception as e:
         logger.error(f"Failed to encrypt tensor: {e}")
@@ -97,6 +100,13 @@ def decrypt_tensor(encrypted_data: Dict[str, Any], encryption_instance: 'TensorE
             import pickle
             tensor = pickle.loads(decrypted_bytes)
             
+            # Ensure tensor has correct shape and dtype
+            if isinstance(tensor, torch.Tensor):
+                if "shape" in encrypted_data:
+                    tensor = tensor.reshape(encrypted_data["shape"])
+                if "dtype" in encrypted_data:
+                    tensor = tensor.to(getattr(torch, encrypted_data["dtype"].split(".")[-1]))
+            
             logger.debug(f"Decrypted tensor of shape {tensor.shape} and dtype {tensor.dtype}")
             return tensor
         else:
@@ -104,8 +114,8 @@ def decrypt_tensor(encrypted_data: Dict[str, Any], encryption_instance: 'TensorE
             logger.warning("Using placeholder decryption - not cryptographically secure")
             
             # Extract metadata
-            shape = encrypted_data["shape"]
-            dtype_str = encrypted_data["dtype"]
+            shape = encrypted_data.get("shape")
+            dtype_str = encrypted_data.get("dtype", "torch.float32")
             data_bytes = encrypted_data["encrypted_data"]
             
             # Convert string dtype back to torch dtype
@@ -120,7 +130,8 @@ def decrypt_tensor(encrypted_data: Dict[str, Any], encryption_instance: 'TensorE
             
             # Reconstruct tensor
             numpy_array = np.frombuffer(data_bytes, dtype=torch_dtype.numpy_dtype if hasattr(torch_dtype, 'numpy_dtype') else np.float32)
-            numpy_array = numpy_array.reshape(shape)
+            if shape:
+                numpy_array = numpy_array.reshape(shape)
             tensor = torch.from_numpy(numpy_array.copy()).to(torch_dtype)
             
             logger.debug(f"Decrypted tensor of shape {tensor.shape} and dtype {tensor.dtype}")

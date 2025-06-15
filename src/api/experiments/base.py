@@ -1188,189 +1188,64 @@ class BaseExperiment(ExperimentInterface):
         """
         raise NotImplementedError("Subclasses must implement this method")
 
-    def _process_encrypted_tensor(self, encrypted_tensor: Dict[str, Any], split_layer: int) -> Dict[str, Any]:
-        """Process encrypted tensor using homomorphic operations.
-        
-        This method handles the full encryption mode where tensors remain encrypted
-        throughout the computation process.
+    def _process_encrypted_tensor(self, encrypted_output: Dict[str, Any], start_layer: int) -> torch.Tensor:
+        """
+        Process an encrypted tensor through the model using homomorphic operations.
         
         Args:
-            encrypted_tensor: Dictionary containing encrypted tensor data and metadata
-            split_layer: The layer index to start processing from
+            encrypted_output: Dictionary containing encrypted tensor data
+            start_layer: Layer index to start processing from
             
         Returns:
-            Dictionary containing encrypted result and metadata
+            Processed tensor result
         """
         try:
-            logger.info(f"Starting encrypted tensor processing from layer {split_layer}")
+            # Check if we can perform homomorphic operations
+            can_do_he = (
+                TENSEAL_AVAILABLE and
+                hasattr(self.model, 'is_he_compatible') and
+                self.model.is_he_compatible and
+                self.encryption is not None and
+                self.encryption.mode == "full"
+            )
             
-            # Get the model in HE-friendly mode
-            if hasattr(self.model, 'get_he_mode') and not self.model.get_he_mode():
-                logger.warning("Model is not in HE-friendly mode for homomorphic processing")
+            logger.info(f"Homomorphic capability check: TenSEAL={TENSEAL_AVAILABLE}, "
+                       f"HE_model={hasattr(self.model, 'is_he_compatible')}, "
+                       f"encryption={self.encryption is not None}, "
+                       f"full_mode={self.encryption.mode == 'full' if self.encryption else False}")
             
-            # Check if we can perform true homomorphic operations
-            if self._can_perform_homomorphic_operations():
-                # Perform actual homomorphic operations with realistic timing
-                logger.info("✅ Performing TRUE homomorphic operations")
-                result = self._apply_homomorphic_layers(encrypted_tensor, split_layer)
-            else:
-                # Fallback: decrypt, process, re-encrypt (less secure but functional)
+            if not can_do_he:
                 logger.warning("⚠️  Fallback: Decrypting for processing due to incomplete homomorphic implementation")
-                from ..utils.tensor_encryption import decrypt_tensor, encrypt_tensor
+                # Decrypt the tensor for regular processing
+                from ..utils.tensor_encryption import decrypt_tensor
+                decrypted_tensor = decrypt_tensor(encrypted_output, self.encryption)
                 
-                # Decrypt tensor
-                decrypted_tensor = decrypt_tensor(encrypted_tensor)
-                logger.info(f"Fallback decrypted tensor shape: {decrypted_tensor.shape}")
+                # Ensure tensor is properly shaped
+                if isinstance(decrypted_tensor, torch.Tensor):
+                    if "shape" in encrypted_output:
+                        decrypted_tensor = decrypted_tensor.reshape(encrypted_output["shape"])
+                    if "dtype" in encrypted_output:
+                        decrypted_tensor = decrypted_tensor.to(getattr(torch, encrypted_output["dtype"].split(".")[-1]))
                 
-                # Move to device and process
-                decrypted_tensor = decrypted_tensor.to(self.device, non_blocking=True)
-                processed_result = self.model(decrypted_tensor, start=split_layer)
-                
-                # Handle tuple results
-                if isinstance(processed_result, tuple):
-                    processed_result, _ = processed_result
-                
-                # Move back to CPU
-                if isinstance(processed_result, torch.Tensor) and processed_result.device != torch.device("cpu"):
-                    processed_result = processed_result.cpu()
-                
-                # Re-encrypt the result
-                result = encrypt_tensor(processed_result, self.encryption if hasattr(self, 'encryption') else None)
-                logger.info("Re-encrypted result tensor after processing")
+                # Process with regular model
+                return self.model(decrypted_tensor, start=start_layer)
             
-            logger.info("Completed encrypted tensor processing")
+            # If we can do homomorphic operations, process the encrypted tensor
+            logger.info("Processing encrypted tensor with homomorphic operations")
+            
+            # Extract encrypted data and metadata
+            encrypted_data = encrypted_output["encrypted_data"]
+            metadata = encrypted_output["metadata"]
+            
+            # Process through homomorphic model
+            result = self.model.process_encrypted(encrypted_data, metadata, start=start_layer)
+            
+            # Ensure result is a tensor
+            if not isinstance(result, torch.Tensor):
+                raise ValueError("Homomorphic processing did not return a tensor")
+            
             return result
             
         except Exception as e:
             logger.error(f"Error in encrypted tensor processing: {e}")
-            # Fallback to error result
-            return {
-                "is_encrypted": True,
-                "encryption_type": "error",
-                "error": str(e)
-            }
-    
-    def _can_perform_homomorphic_operations(self) -> bool:
-        """Check if we can perform true homomorphic operations.
-        
-        Returns True if all necessary homomorphic operations are implemented,
-        False if we need to use the fallback decrypt-process-encrypt approach.
-        """
-        # Check if we have all necessary components for homomorphic operations
-        has_tenseal = False
-        try:
-            import tenseal as ts
-            has_tenseal = True
-        except ImportError:
-            pass
-        
-        has_he_model = hasattr(self.model, 'get_he_mode') and self.model.get_he_mode()
-        has_encryption = hasattr(self, 'encryption') and self.encryption is not None
-        
-        # Check if we're in full encryption mode
-        encryption_mode = self.config.get("encryption", {}).get("mode", "none")
-        is_full_mode = encryption_mode == "full"
-        
-        # Return True if all conditions are met for homomorphic operations
-        can_perform_he = has_tenseal and has_he_model and has_encryption and is_full_mode
-        
-        logger.info(f"Homomorphic capability check: TenSEAL={has_tenseal}, HE_model={has_he_model}, encryption={has_encryption}, full_mode={is_full_mode}")
-        logger.info(f"Can perform homomorphic operations: {can_perform_he}")
-        
-        return can_perform_he
-    
-    def _apply_homomorphic_layers(self, encrypted_tensor: Dict[str, Any], split_layer: int) -> Dict[str, Any]:
-        """Apply homomorphic operations corresponding to neural network layers.
-        
-        This method implements homomorphic versions of neural network operations
-        with realistic timing to demonstrate the performance characteristics of
-        homomorphic encryption (typically 100-1000x slower than plaintext).
-        
-        Args:
-            encrypted_tensor: Encrypted tensor data
-            split_layer: Starting layer index
-            
-        Returns:
-            Encrypted result after homomorphic operations
-        """
-        import time
-        
-        logger.info(f"🔐 Starting TRUE homomorphic processing from layer {split_layer}")
-        he_start_time = time.time()
-        
-        try:
-            # Extract metadata from encrypted tensor
-            metadata = encrypted_tensor.get("metadata", {})
-            tensor_shape = metadata.get("shape", [1, 128, 4, 4])  # Default shape
-            
-            # Get remaining layers to process
-            remaining_layers = self.model.layer_count - split_layer
-            logger.info(f"Processing {remaining_layers} layers homomorphically")
-            
-            # Simulate homomorphic operations with realistic timing
-            # Real homomorphic encryption is 100-1000x slower than plaintext
-            base_processing_time = 0.001  # Base time per layer in plaintext (1ms)
-            he_slowdown_factor = 500     # Homomorphic encryption slowdown factor
-            
-            for layer_idx in range(split_layer, self.model.layer_count):
-                layer_start = time.time()
-                
-                # Simulate homomorphic operation timing based on layer type
-                if layer_idx < self.model.layer_count - 1:
-                    # Convolutional layers are more expensive in HE
-                    operation_time = base_processing_time * he_slowdown_factor * 2.0
-                    logger.info(f"  🧮 Homomorphic conv/pool layer {layer_idx}...")
-                else:
-                    # Fully connected layers are also expensive but slightly less
-                    operation_time = base_processing_time * he_slowdown_factor * 1.5
-                    logger.info(f"  🧮 Homomorphic linear layer {layer_idx}...")
-                
-                # Simulate the actual computational cost of homomorphic operations
-                # This includes: HE multiplication, HE addition, noise management, relinearization
-                time.sleep(operation_time)
-                
-                layer_time = time.time() - layer_start
-                logger.info(f"    ⏱️  Layer {layer_idx} HE processing: {layer_time:.3f}s")
-            
-            # Simulate noise management and final encryption overhead
-            logger.info("  🔧 Performing noise management and relinearization...")
-            time.sleep(base_processing_time * he_slowdown_factor * 0.5)
-            
-            total_he_time = time.time() - he_start_time
-            logger.info(f"🎯 HOMOMORPHIC PROCESSING COMPLETE: {total_he_time:.3f}s total")
-            logger.info(f"   (Approx {he_slowdown_factor}x slower than plaintext)")
-            
-            # Create realistic encrypted result structure
-            # In real HE, this would contain TenSEAL encrypted vectors
-            homomorphic_result = {
-                "is_encrypted": True,
-                "encryption_type": "homomorphic",
-                "encryption_mode": "full",
-                "he_processing_time": total_he_time,
-                "layers_processed": remaining_layers,
-                "encrypted_data": encrypted_tensor.get("encrypted_data", b"simulated_he_result"),
-                "metadata": {
-                    "shape": [1, 10] if layer_idx == self.model.layer_count - 1 else tensor_shape,  # Final output shape
-                    "dtype": "float32",
-                    "he_context": "CKKS_context",
-                    "noise_level": "acceptable"
-                },
-                "he_metadata": {
-                    "polynomial_degree": getattr(self.encryption, 'degree', 8192),
-                    "scale_bits": getattr(self.encryption, 'scale', 26),
-                    "security_level": 128
-                }
-            }
-            
-            logger.info("✅ Homomorphic result structure created")
-            return homomorphic_result
-            
-        except Exception as e:
-            logger.error(f"❌ Error in homomorphic operations: {e}")
-            # Even in error case, maintain encrypted structure
-            return {
-                "is_encrypted": True,
-                "encryption_type": "homomorphic_error", 
-                "error": str(e),
-                "he_processing_time": time.time() - he_start_time
-            }
+            raise
