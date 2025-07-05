@@ -87,7 +87,7 @@ class CIFARConvNet(nn.Module):
         encryption_config = model_config.get("encryption", {})
         if encryption_config.get("enabled", False) and encryption_config.get("mode") == "full":
             self.use_he_friendly = True
-            logger.info("Enabling HE-friendly mode due to full encryption configuration")
+            logger.info("Enabling HE-friendly mode due to full encryption configuration (model_config)")
             
         # Method 3: Check if global encryption mode is set to full
         if hasattr(model_config, 'get') and model_config.get("global_encryption_mode") == "full":
@@ -100,6 +100,8 @@ class CIFARConvNet(nn.Module):
             if full_encryption_config.get("enabled", False) and full_encryption_config.get("mode") == "full":
                 self.use_he_friendly = True
                 logger.info("Enabling HE-friendly mode due to full encryption configuration in kwargs")
+            # Also log what we found for debugging
+            logger.debug(f"Full config encryption check: enabled={full_encryption_config.get('enabled', False)}, mode={full_encryption_config.get('mode', 'none')}")
                 
         # Method 5: Environment variable fallback (NEW!)
         if os.environ.get("TENSOR_ENCRYPTION_MODE") == "full":
@@ -107,6 +109,10 @@ class CIFARConvNet(nn.Module):
             logger.info("Enabling HE-friendly mode due to environment variable TENSOR_ENCRYPTION_MODE=full")
             
         logger.info(f"CIFAR ConvNet initialized with HE-friendly mode: {self.use_he_friendly}")
+        
+        # Set activation attribute for HE compatibility checking
+        self.activation = 'square' if self.use_he_friendly else 'relu'
+        logger.info(f"Using {self.activation} activation for {'HE-friendly' if self.use_he_friendly else 'standard'} mode")
         
         # First conv block
         self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
@@ -232,6 +238,17 @@ class CIFARConvNet(nn.Module):
         x = self.fc2(x)
         return x
     
+    @property
+    def is_he_compatible(self) -> bool:
+        """Check if the model is configured for homomorphic encryption compatibility."""
+        # Check if we're in HE-friendly mode
+        if not hasattr(self, 'use_he_friendly'):
+            return False
+            
+        # If we're in HE-friendly mode, we should be compatible
+        # (activation attribute should automatically be set to 'square' when use_he_friendly=True)
+        return self.use_he_friendly
+    
     def get_he_mode(self):
         """Return whether the model is in HE-friendly mode."""
         return self.use_he_friendly
@@ -245,7 +262,10 @@ class CIFARConvNet(nn.Module):
         old_mode = self.use_he_friendly
         self.use_he_friendly = he_friendly
         
+        # Update the activation attribute to match the mode
+        self.activation = 'square' if he_friendly else 'relu'
+        
         if old_mode != he_friendly:
-            logger.info(f"Switched CIFAR ConvNet mode: HE-friendly={he_friendly}")
+            logger.info(f"Switched CIFAR ConvNet mode: HE-friendly={he_friendly}, activation={self.activation}")
             
         return old_mode 

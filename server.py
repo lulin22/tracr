@@ -45,6 +45,10 @@ from src.api.network.protocols import ( # noqa: E402
     DEFAULT_PORT,
 )
 
+# Import encryption utilities
+from src.utils.tensor_encryption import decrypt_tensor
+from src.api.network.encryption import TensorEncryption
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "logging": {"log_file": "logs/server.log", "log_level": "INFO"}
 }
@@ -278,10 +282,7 @@ class Server:
                 self.encryption = None
         
         # Initialize compression (always needed)
-        self.compress_data = DataCompression(
-            SERVER_COMPRESSION_SETTINGS, 
-            encryption=self.encryption
-        )
+        self.compress_data = DataCompression(SERVER_COMPRESSION_SETTINGS)
         
         if self.encryption:
             logger.info(f"Homomorphic encryption enabled for secure tensor processing in {self.encryption.mode} mode")
@@ -635,6 +636,25 @@ class Server:
                 if self.encryption:
                     experiment.encryption = self.encryption
                     logger.info("Passed encryption instance to experiment for homomorphic operations")
+                    
+                    # Check if we need to enable HE mode on the model after encryption setup
+                    encryption_mode = config.get("encryption", {}).get("mode", "transmission")
+                    if encryption_mode == "full":
+                        # Access the underlying model (WrappedModel.model)
+                        underlying_model = getattr(experiment.model, 'model', experiment.model)
+                        
+                        # Since the model should already be HE-friendly by default, we don't need to enable it
+                        # Just verify the state is correct
+                        if hasattr(underlying_model, 'is_he_compatible'):
+                            if underlying_model.is_he_compatible:
+                                logger.info("✅ Model is HE-compatible and ready for homomorphic processing")
+                            else:
+                                logger.warning("❌ Model is not HE-compatible despite being configured for HE-only mode")
+                                logger.warning("This suggests an initialization issue in the CIFAR model")
+                        else:
+                            logger.warning(f"🔧 DEBUG: underlying_model {type(underlying_model)} does not have is_he_compatible property")
+                
+
                 
                 logger.info("Experiment initialized successfully with received config")
             except Exception as e:
@@ -689,8 +709,13 @@ class Server:
                     # Process the data
                     with no_grad_context:
                         # Decompress received data
-                        output, original_size = self.compress_data.decompress_data(
+                        decompressed_data = self.compress_data.decompress_data(
                             data=compressed_data
+                        )
+                        
+                        # ===== DECRYPTION STEP (if needed) =====
+                        output, original_size = self._handle_decryption(
+                            decompressed_data, split_layer_index
                         )
 
                         # Process data using the experiment's model
@@ -776,36 +801,87 @@ class Server:
             logger.debug(f"Updating compression settings: {config['compression']}")
             
             # Create new compression instance with the received settings
-            if self.encryption:
-                # If we have encryption set up, pass it to the new compression instance
-                self.compress_data = DataCompression(
-                    config["compression"], 
-                    encryption=self.encryption,
-                    encryption_mode=encryption_mode
-                )
-                if encryption_mode == "full":
-                    logger.info("Updated compression with full encryption mode - server will process encrypted tensors")
-                else:
-                    logger.debug("Updated compression with transmission encryption mode")
-            else:
-                # Standard compression without encryption
-                self.compress_data = DataCompression(config["compression"])
-                logger.debug("Updated compression without encryption")
+            self.compress_data = DataCompression(config["compression"])
+            logger.debug("Updated compression settings")
         else:
             # If no compression settings in config, keep current settings
-            if self.encryption:
-                # But make sure we use the encryption if it's been set up
-                self.compress_data = DataCompression(
-                    SERVER_COMPRESSION_SETTINGS, 
-                    encryption=self.encryption,
-                    encryption_mode=encryption_mode
-                )
-                if encryption_mode == "full":
-                    logger.info("Using minimal compression with full encryption mode")
-                else:
-                    logger.debug("Keeping minimal compression settings with transmission encryption")
+            logger.debug("No compression settings in config, keeping current settings")
+
+    def _handle_decryption(self, decompressed_data: Any, split_layer_index: int) -> Tuple[torch.Tensor, Tuple[int, int]]:
+        """
+        Handle decryption of the decompressed data based on encryption status.
+        
+        Args:
+            decompressed_data: The decompressed data from client (could be encrypted or plain)
+            split_layer_index: The layer index where processing was split
+            
+        Returns:
+            Tuple of (tensor_data, original_size) ready for processing
+        """
+        try:
+            # The decompressed data should be a tuple of (data, original_size)
+            if isinstance(decompressed_data, tuple) and len(decompressed_data) == 2:
+                data, original_size = decompressed_data
             else:
-                logger.warning("No compression settings in config, keeping minimal settings without encryption")
+                logger.error(f"Unexpected decompressed data format: {type(decompressed_data)}")
+                raise ValueError("Invalid decompressed data format")
+            
+            # Check if the data is encrypted
+            if isinstance(data, dict) and data.get("is_encrypted", False):
+                logger.info(f"🔓 Received encrypted data, encryption available: {self.encryption is not None}")
+                
+                if self.encryption:
+                    encryption_type = data.get("encryption_type", "unknown")
+                    
+                    if encryption_type == "homomorphic":
+                        # Handle homomorphic encryption
+                        if self.encryption.mode == "transmission":
+                            # TRANSMISSION MODE: Decrypt to plain tensor for regular processing
+                            logger.info("🔓 TRANSMISSION MODE: Decrypting tensor for regular processing")
+                            decrypted_tensor = decrypt_tensor(data, self.encryption)
+                            
+                            if isinstance(decrypted_tensor, torch.Tensor):
+                                logger.info(f"✅ Decrypted tensor shape: {decrypted_tensor.shape}")
+                                return decrypted_tensor, original_size
+                            else:
+                                logger.error(f"Decryption returned unexpected type: {type(decrypted_tensor)}")
+                                raise ValueError("Decryption failed - invalid tensor type")
+                                
+                        elif self.encryption.mode == "full":
+                            # FULL MODE: Keep encrypted for homomorphic processing
+                            logger.info("🔐 FULL MODE: Keeping tensor encrypted for homomorphic processing")
+                            # For full mode, we return the encrypted data structure
+                            # The homomorphic wrapper will handle this
+                            return data, original_size
+                        else:
+                            logger.error(f"Unknown encryption mode: {self.encryption.mode}")
+                            raise ValueError(f"Unsupported encryption mode: {self.encryption.mode}")
+                    
+                    elif encryption_type == "placeholder":
+                        # Handle placeholder encryption (development/testing)
+                        logger.warning("🔓 Handling placeholder encryption - not cryptographically secure")
+                        decrypted_tensor = decrypt_tensor(data, self.encryption)
+                        return decrypted_tensor, original_size
+                    
+                    else:
+                        logger.error(f"Unknown encryption type: {encryption_type}")
+                        raise ValueError(f"Unsupported encryption type: {encryption_type}")
+                else:
+                    logger.error("Received encrypted data but no encryption instance available on server")
+                    raise ValueError("Cannot decrypt - no encryption available")
+            else:
+                # Plain (unencrypted) data
+                logger.debug("📦 Received plain (unencrypted) tensor")
+                
+                if isinstance(data, torch.Tensor):
+                    return data, original_size
+                else:
+                    logger.error(f"Expected torch.Tensor for plain data, got: {type(data)}")
+                    raise ValueError("Invalid plain data format")
+                    
+        except Exception as e:
+            logger.error(f"Error in decryption handling: {e}")
+            raise
 
     def cleanup(self) -> None:
         """

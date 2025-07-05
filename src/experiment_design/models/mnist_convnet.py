@@ -6,6 +6,7 @@ from typing import Any, Dict
 import torch
 import torch.nn as nn
 from torch import Tensor
+import os
 
 # Import the registry for model registration
 from src.experiment_design.models.core.registry import ModelRegistry
@@ -47,32 +48,37 @@ class ConvNetModel(nn.Module):
         self.num_classes = model_config.get("num_classes", 10)
         self.input_size = tuple(model_config.get("input_size", [1, 28, 28]))
         
-        # Check if HE-friendly mode should be used
+        # Default to non-HE mode
         self.use_he_friendly = False
         
-        # Method 1: Direct parameter
-        if model_config.get("use_he_friendly", False):
-            self.use_he_friendly = True
+        # Check for HE configuration in multiple ways
+        if model_config and isinstance(model_config, dict):
+            # Method 1: Direct model config
+            if model_config.get("use_he_friendly", False):
+                self.use_he_friendly = True
+                logger.info("Enabling HE-friendly mode from model config")
             
-        # Method 2: Check encryption config for "full" mode
-        encryption_config = model_config.get("encryption", {})
-        if encryption_config.get("enabled", False) and encryption_config.get("mode") == "full":
-            self.use_he_friendly = True
-            logger.info("Enabling HE-friendly mode due to full encryption configuration")
-            
-        # Method 3: Check if global encryption mode is set to full
-        if hasattr(model_config, 'get') and model_config.get("global_encryption_mode") == "full":
-            self.use_he_friendly = True
-            
-        # Method 4: Check full config if passed through kwargs
+            # Method 2: Global encryption mode
+            if model_config.get("global_encryption_mode") == "full":
+                self.use_he_friendly = True
+                logger.info("Enabling HE-friendly mode from global encryption mode")
+        
+        # Method 3: Full config in kwargs
         full_config = kwargs.get('full_config') or kwargs.get('config')
         if full_config and isinstance(full_config, dict):
-            full_encryption_config = full_config.get("encryption", {})
-            if full_encryption_config.get("enabled", False) and full_encryption_config.get("mode") == "full":
+            encryption_config = full_config.get("encryption", {})
+            if encryption_config.get("enabled", False) and encryption_config.get("mode") == "full":
                 self.use_he_friendly = True
-                logger.info("Enabling HE-friendly mode due to full encryption configuration in kwargs")
+                logger.info("Enabling HE-friendly mode from full config")
         
-        logger.info(f"ConvNet initialized with HE-friendly mode: {self.use_he_friendly}")
+        # Method 4: Environment variable
+        if os.environ.get("TENSOR_ENCRYPTION_MODE") == "full":
+            self.use_he_friendly = True
+            logger.info("Enabling HE-friendly mode from environment variable")
+        
+        # Set activation based on HE mode
+        self.activation = 'square' if self.use_he_friendly else 'relu'
+        logger.info(f"Using {self.activation} activation for {'HE-friendly' if self.use_he_friendly else 'regular'} mode")
         
         # Create the actual ConvNet model
         self.model = ConvNet(hidden=self.hidden_size, output=self.num_classes)
@@ -102,7 +108,15 @@ class ConvNetModel(nn.Module):
     
     @property
     def is_he_compatible(self) -> bool:
-        """Return whether the model is compatible with homomorphic encryption."""
+        """Check if the model is configured for homomorphic encryption compatibility."""
+        # Check if we're in HE-friendly mode
+        if not hasattr(self, 'use_he_friendly'):
+            return False
+            
+        # Check if we're using square activation (required for HE)
+        if not hasattr(self, 'activation') or self.activation != 'square':
+            return False
+            
         return self.use_he_friendly
     
     def forward(self, x: Tensor, **kwargs) -> Tensor:

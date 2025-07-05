@@ -173,17 +173,24 @@ class HomomorphicEncryption:
             logger.error(f"Key derivation failed: {e}")
             raise KeyManagementError(f"Failed to derive encryption parameters from password: {e}")
 
-    def encrypt(self, data: Union[bytes, np.ndarray, torch.Tensor]) -> Tuple[bytes, dict]:
+    def encrypt(self, data: Union[bytes, np.ndarray, torch.Tensor], 
+                prepare_for_convolution: bool = False,
+                kernel_shape: Optional[Tuple[int, int]] = None,
+                stride: int = 1) -> Tuple[bytes, dict]:
         """
         Encrypt tensor data using CKKS homomorphic encryption.
 
         This method:
         1. Converts the input to a format suitable for homomorphic encryption
-        2. Encrypts the data using the TenSEAL context
-        3. Serializes the encrypted data for transmission
+        2. Optionally prepares data for convolution using ts.im2col_encoding (like test6.py)
+        3. Encrypts the data using the TenSEAL context
+        4. Serializes the encrypted data for transmission
 
         Args:
             data: Tensor data to encrypt (bytes, numpy array, or PyTorch tensor)
+            prepare_for_convolution: If True, prepare data for conv2d_im2col operations
+            kernel_shape: Tuple of (kernel_height, kernel_width) for convolution preparation
+            stride: Stride for convolution preparation
 
         Returns:
             Tuple of (encrypted_data_bytes, encryption_metadata)
@@ -211,20 +218,154 @@ class HomomorphicEncryption:
             else:
                 raise EncryptionError(f"Unsupported data type for encryption: {type(data)}")
             
-            # Flatten the array for encryption
-            flat_data = numpy_data.flatten().tolist()
-            
-            # Encrypt the flattened data
-            enc_vector = ts.ckks_vector(self.context, flat_data)
-            
-            # Serialize the encrypted vector for transmission
-            encrypted_data = enc_vector.serialize()
-            
-            # Save metadata for proper decryption and reshaping
+            # Prepare metadata for proper decryption and reshaping
             metadata = {
                 "shape": numpy_data.shape,
-                "dtype": str(numpy_data.dtype)
+                "dtype": str(numpy_data.dtype),
+                "prepared_for_convolution": prepare_for_convolution
             }
+            
+            if prepare_for_convolution and kernel_shape is not None:
+                # Prepare data for convolution using ts.im2col_encoding (like test6.py)
+                logger.info(f"Preparing data for convolution with kernel shape {kernel_shape}, stride {stride}")
+                
+                # Extract image dimensions - assume format is (batch, channels, height, width) or (height, width)
+                if len(numpy_data.shape) == 4:
+                    # Batch format: (batch, channels, height, width)
+                    # For now, take the first image in the batch
+                    image_data = numpy_data[0]  # Shape: (channels, height, width)
+                    logger.info(f"🔍 4D tensor detected: {numpy_data.shape} -> extracted image_data: {image_data.shape}")
+                elif len(numpy_data.shape) == 3:
+                    # Single image: (channels, height, width)
+                    image_data = numpy_data
+                    logger.info(f"🔍 3D tensor detected: {numpy_data.shape}")
+                elif len(numpy_data.shape) == 2:
+                    # Grayscale image: (height, width)
+                    image_data = numpy_data
+                    logger.info(f"🔍 2D tensor detected: {numpy_data.shape}")
+                else:
+                    raise EncryptionError(f"Unsupported tensor shape for convolution: {numpy_data.shape}")
+                
+                # Handle different image formats for TenSEAL im2col_encoding
+                if len(image_data.shape) == 2:
+                    # Grayscale image: (height, width)
+                    logger.info(f"🔍 Processing as 2D grayscale image: {image_data.shape}")
+                    height, width = image_data.shape
+                    image_list = image_data.tolist()
+                    
+                    # Use ts.im2col_encoding to prepare for conv2d_im2col (exactly like test6.py)
+                    kernel_h, kernel_w = kernel_shape
+                    enc_vector, windows_nb = ts.im2col_encoding(
+                        self.context, image_list, kernel_h, kernel_w, stride
+                    )
+                    
+                    # Store metadata for single-channel convolution
+                    metadata.update({
+                        "windows_nb": windows_nb,
+                        "kernel_shape": kernel_shape,
+                        "stride": stride,
+                        "image_height": height,
+                        "image_width": width,
+                        "im2col_encoded": True,
+                        "channels": 1,
+                        "encoded_channels": [enc_vector.serialize()]
+                    })
+                    
+                    # Serialize the encrypted vector prepared for convolution
+                    encrypted_data = enc_vector.serialize()
+                    
+                elif len(image_data.shape) == 3 and image_data.shape[0] == 1:
+                    # Single channel image: (1, height, width)
+                    logger.info(f"🔍 Processing as single-channel 3D image: {image_data.shape}")
+                    height, width = image_data.shape[1], image_data.shape[2]
+                    image_list = image_data[0].tolist()  # Remove channel dimension
+                    
+                    # Use ts.im2col_encoding to prepare for conv2d_im2col (exactly like test6.py)
+                    kernel_h, kernel_w = kernel_shape
+                    enc_vector, windows_nb = ts.im2col_encoding(
+                        self.context, image_list, kernel_h, kernel_w, stride
+                    )
+                    
+                    # Store metadata for single-channel convolution
+                    metadata.update({
+                        "windows_nb": windows_nb,
+                        "kernel_shape": kernel_shape,
+                        "stride": stride,
+                        "image_height": height,
+                        "image_width": width,
+                        "im2col_encoded": True,
+                        "channels": 1,
+                        "encoded_channels": [enc_vector.serialize()]
+                    })
+                    
+                    # Serialize the encrypted vector prepared for convolution
+                    encrypted_data = enc_vector.serialize()
+                    
+                elif len(image_data.shape) == 3:
+                    # Multi-channel image: (channels, height, width)
+                    # TenSEAL's im2col_encoding expects a 2D image (height, width)
+                    # For multi-channel data, we need to encode each channel separately
+                    channels, height, width = image_data.shape
+                    logger.info(f"🔍 Processing as multi-channel 3D image: {image_data.shape} = ({channels}, {height}, {width})")
+                    
+                    # Limit channels to avoid TenSEAL slot overflow
+                    max_channels = min(channels, 4)
+                    logger.info(f"Multi-channel tensor ({channels} channels) - encoding first {max_channels} channels separately")
+                    
+                    # Encode each channel separately using ts.im2col_encoding
+                    encoded_channels = []
+                    kernel_h, kernel_w = kernel_shape
+                    windows_nb = None
+                    
+                    for ch in range(max_channels):
+                        logger.info(f"  🔍 Encoding channel {ch+1}/{max_channels}")
+                        channel_data = image_data[ch].tolist()  # Extract single channel as 2D list
+                        
+                        # Use ts.im2col_encoding for this channel
+                        enc_channel, ch_windows_nb = ts.im2col_encoding(
+                            self.context, channel_data, kernel_h, kernel_w, stride
+                        )
+                        
+                        # Store the encoded channel
+                        encoded_channels.append(enc_channel.serialize())
+                        logger.info(f"  ✅ Channel {ch+1} encoded successfully")
+                        
+                        # All channels should have the same windows_nb
+                        if windows_nb is None:
+                            windows_nb = ch_windows_nb
+                        elif windows_nb != ch_windows_nb:
+                            logger.warning(f"Channel {ch} has different windows_nb: {ch_windows_nb} vs {windows_nb}")
+                    
+                    # Store metadata for multi-channel convolution
+                    metadata.update({
+                        "windows_nb": windows_nb,
+                        "kernel_shape": kernel_shape,
+                        "stride": stride,
+                        "image_height": height,
+                        "image_width": width,
+                        "im2col_encoded": True,
+                        "channels": max_channels,
+                        "encoded_channels": encoded_channels,
+                        "original_channels": channels
+                    })
+                    
+                    # For the main encrypted_data, use the first channel (for compatibility)
+                    encrypted_data = encoded_channels[0]
+                    
+                    logger.info(f"Multi-channel convolution preparation complete: {max_channels} channels encoded with windows_nb={windows_nb}")
+                
+                logger.info(f"Data prepared for convolution: windows_nb={windows_nb}, kernel={kernel_shape}")
+                
+            else:
+                # Standard encryption without convolution preparation
+                # Flatten the array for encryption
+                flat_data = numpy_data.flatten().tolist()
+                
+                # Encrypt the flattened data
+                enc_vector = ts.ckks_vector(self.context, flat_data)
+                
+                # Serialize the encrypted vector for transmission
+                encrypted_data = enc_vector.serialize()
             
             return encrypted_data, metadata
         except Exception as e:
@@ -563,38 +704,59 @@ class TensorEncryption:
             logger.error(f"Failed to create TensorEncryption from password: {e}")
             raise EncryptionError(f"Failed to create encryption from password: {e}")
     
-    def encrypt(self, data: Union[bytes, np.ndarray, torch.Tensor]) -> Tuple[bytes, dict]:
+    def encrypt(self, data: Union[bytes, np.ndarray, torch.Tensor], 
+                prepare_for_convolution: bool = False,
+                kernel_shape: Optional[Tuple[int, int]] = None,
+                stride: int = 1) -> Tuple[bytes, dict]:
         """
         Encrypt tensor data using the configured encryption method.
         
         Args:
             data: Data to encrypt (bytes, numpy array, or PyTorch tensor)
+            prepare_for_convolution: If True, prepare data for conv2d_im2col operations
+            kernel_shape: Tuple of (kernel_height, kernel_width) for convolution preparation
+            stride: Stride for convolution preparation
             
         Returns:
             Tuple of (encrypted_data_bytes, encryption_metadata)
         """
         try:
-            return self.homomorphic_encryption.encrypt(data)
+            return self.homomorphic_encryption.encrypt(data, prepare_for_convolution, kernel_shape, stride)
         except Exception as e:
             logger.error(f"Encryption failed: {e}")
             raise EncryptionError(f"Failed to encrypt data: {e}")
     
-    def decrypt(self, encrypted_data: bytes, metadata: dict) -> bytes:
+    def decrypt(self, encrypted_data: bytes, metadata: dict) -> Union[bytes, Dict[str, Any]]:
         """
-        Decrypt tensor data using the configured encryption method.
+        Decrypt or prepare tensor data based on the encryption mode.
         
         Args:
             encrypted_data: Encrypted data bytes
             metadata: Encryption metadata dictionary
             
         Returns:
-            Decrypted data as bytes
+            - In "transmission" mode: Decrypted tensor data as bytes
+            - In "full" mode: Dictionary with encrypted data for homomorphic processing
         """
         try:
-            return self.homomorphic_encryption.decrypt(encrypted_data, metadata)
+            if self.mode == "transmission":
+                # Decrypt to plaintext for regular processing
+                return self.homomorphic_encryption.decrypt(encrypted_data, metadata)
+            elif self.mode == "full":
+                # Return encrypted data structure for homomorphic processing
+                # DO NOT decrypt - keep encrypted for homomorphic operations
+                return {
+                    "encrypted_data": encrypted_data,
+                    "metadata": metadata,
+                    "is_encrypted": True,
+                    "encryption_type": "homomorphic",
+                    "mode": "full"
+                }
+            else:
+                raise ValueError(f"Unknown encryption mode: {self.mode}")
         except Exception as e:
-            logger.error(f"Decryption failed: {e}")
-            raise DecryptionError(f"Failed to decrypt data: {e}")
+            logger.error(f"Failed to process encrypted data in {self.mode} mode: {e}")
+            raise DecryptionError(f"Failed to process encrypted data: {e}")
     
     def get_context(self) -> ts.Context:
         """Get the TenSEAL context."""

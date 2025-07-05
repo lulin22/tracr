@@ -1,13 +1,13 @@
 """
 Tensor compression utilities for network transmission in split computing.
 
-This module provides specialized compression tools for neural network tensors
+This module provides PURE COMPRESSION ONLY for neural network tensors
 to optimize network transmission in distributed computation environments.
+Compression is completely separate from encryption.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, cast
-
+from typing import Any, Dict, Optional, Tuple
 import blosc2  # type: ignore
 import logging
 import pickle
@@ -19,14 +19,6 @@ from .protocols import (
     HIGHEST_PROTOCOL,
 )
 from ..core import NetworkError
-
-# Import tensor encryption only if available
-try:
-    from .encryption import TensorEncryption
-    ENCRYPTION_AVAILABLE = True
-except ImportError:
-    TensorEncryption = None
-    ENCRYPTION_AVAILABLE = False
 
 logger = logging.getLogger("split_computing_logger")
 
@@ -53,35 +45,38 @@ class CompressionConfig:
 
 class CompressionError(Exception):
     """Base exception for tensor compression-related errors."""
-
     pass
 
 
 class DecompressionError(CompressionError):
     """Exception raised when tensor decompression fails."""
-
     pass
 
 
 class DataCompression:
-    """Handles advanced tensor compression for distributed neural network computation."""
+    """Handles PURE LOSSLESS COMPRESSION for distributed neural network computation.
+    
+    This class does ONLY compression/decompression:
+    - Takes any data (encrypted or not)
+    - Serializes with pickle
+    - Compresses with blosc2
+    - Reverses the process on decompression
+    
+    NO encryption logic, NO tensor shape analysis, NO model parameter extraction.
+    Encryption should be handled separately BEFORE compression.
+    """
 
-    def __init__(self, config: Dict[str, Any], encryption: Optional[TensorEncryption] = None, encryption_mode: str = "transmission") -> None:
-        """
-        Initialize tensor compression with optional encryption support.
+    def __init__(self, config: Dict[str, Any]) -> None:
+        """Initialize tensor compression.
 
         Args:
             config: Compression parameters (clevel, filter, codec)
-            encryption: Optional TensorEncryption instance for secure tensor sharing
-            encryption_mode: Mode for encryption behavior ("transmission" or "full")
         """
         self.config = CompressionConfig(
             clevel=config.get("clevel", 3),
             filter=config.get("filter", "SHUFFLE"),
             codec=config.get("codec", "ZSTD"),
         )
-        self.encryption = encryption
-        self.encryption_mode = encryption_mode
 
         # Convert string filter names to Blosc2 constants
         filter_mapping = {
@@ -99,277 +94,144 @@ class DataCompression:
         }
         self._codec = codec_mapping.get(self.config.codec, blosc2.Codec.ZSTD)
 
-    @property
-    def encryption_enabled(self) -> bool:
-        """Check if encryption is available and properly configured."""
-        return self.encryption is not None and hasattr(self.encryption, 'mode')
-
     def compress_data(self, data: Any) -> Tuple[bytes, int]:
-        """
-        Compress and optionally encrypt tensor data for network transmission.
+        """Compress any data for network transmission.
 
-        === TENSOR SHARING - COMPRESSION PHASE ===
-        Pipeline implemented (encrypt->serialize->compress):
-        1. If encryption is enabled, encrypt the tensor component first using TenSEAL
-           (regardless of mode). For "transmission" mode the server will decrypt
-           before computation; for "full" mode the tensor remains encrypted end-to-end.
-        2. Package the encrypted tensor together with required metadata so that the
-           receiver knows how to post-process it (original tensor size, etc.).
-        3. Serialize the package with pickle using the highest protocol.
-        4. Compress the serialized bytes with Blosc2 for efficient transfer.
+        PURE COMPRESSION ONLY:
+        1. Serialize the data with pickle (whatever it is - encrypted or not)
+        2. Compress the serialized bytes with Blosc2
+        3. Return compressed bytes and length
+
+        Args:
+            data: Any data to compress (encrypted tensors, plain tensors, etc.)
+
+        Returns:
+            Tuple of (compressed_bytes, compressed_length)
         """
         try:
-            # Debug: Show compression call and encryption status
-            logger.info(f"📦 compress_data called - encryption={self.encryption is not None}, encryption_enabled={self.encryption_enabled}")
+            logger.debug(f"📦 Compressing data of type: {type(data)}")
             
-            # -------------------------------------------------------------
-            # STEP 1: build the payload to be serialized
-            # -------------------------------------------------------------
-            if self.encryption_enabled:
-                logger.info(f"🔐 Compression with encryption enabled (mode: {self.encryption.mode})")
-                import torch  # Local import to avoid mandatory torch when unused
-                # We only attempt to encrypt if the incoming payload matches the
-                # expected (tensor, original_size) tuple produced by the pipeline.
-                if isinstance(data, tuple) and len(data) == 2:
-                    tensor_data, original_size = data
-                    
-                    # Extract actual tensor - handle both torch.Tensor and EarlyOutput
-                    actual_tensor = None
-                    if isinstance(tensor_data, torch.Tensor):
-                        actual_tensor = tensor_data
-                    elif hasattr(tensor_data, 'inner_dict'):
-                        # Handle EarlyOutput objects by extracting the tensor
-                        inner_data = tensor_data.inner_dict
-                        if isinstance(inner_data, torch.Tensor):
-                            actual_tensor = inner_data
-                            logger.info("🔍 Extracted tensor from EarlyOutput for encryption")
-                        elif isinstance(inner_data, dict):
-                            # EarlyOutput contains a dictionary of tensors - use the last one
-                            if inner_data:
-                                max_key = max(inner_data.keys())
-                                if isinstance(inner_data[max_key], torch.Tensor):
-                                    actual_tensor = inner_data[max_key]
-                                    logger.info(f"🔍 Extracted tensor from EarlyOutput dict layer {max_key} for encryption")
-                    
-                    if actual_tensor is not None:
-                        # Encrypt the extracted tensor using helper utility
-                        from ..utils.tensor_encryption import encrypt_tensor
-                        encrypted_tensor_data = encrypt_tensor(actual_tensor, self.encryption)
+            # STEP 1: Serialize (whatever the data is)
+            serialized_data = pickle.dumps(data, protocol=HIGHEST_PROTOCOL)
+            logger.debug(f"📦 Serialized data: {len(serialized_data)} bytes")
 
-                        # Mark payload with encryption mode for downstream logic
-                        payload: Dict[str, Any] = {
-                            "encrypted_tensor": encrypted_tensor_data,
-                            "original_size": original_size,
-                            "is_encrypted": True,
-                            "encryption_mode": self.encryption.mode,
-                        }
-                        logger.info(f"✅ Successfully encrypted tensor data in {self.encryption.mode} mode")
-                    else:
-                        # Could not extract a tensor—fallback to regular serialization path
-                        logger.warning(f"Could not extract tensor from data type {type(tensor_data)} for encryption")
-                        payload = data
-                else:
-                    # Non-standard payload (e.g. inference result). Do not encrypt – just forward.
-                    payload = data
-            else:
-                payload = data
-
-            # -------------------------------------------------------------
-            # STEP 2: serialize & STEP 3: compress
-            # -------------------------------------------------------------
-            serialized_data = pickle.dumps(payload, protocol=HIGHEST_PROTOCOL)
-
+            # STEP 2: Compress 
             compressed_data = blosc2.compress(
                 serialized_data,
                 clevel=self.config.clevel,
                 filter=self._filter,
                 codec=self._codec,
             )
+            logger.debug(f"📦 Compressed data: {len(compressed_data)} bytes (ratio: {len(compressed_data)/len(serialized_data):.2f})")
 
-            # Return compressed bytes and their true length (after compression)
+            # Return compressed bytes and their length
             return compressed_data, len(compressed_data)
+            
         except Exception as e:
-            logger.error(f"Tensor compression failed: {e}")
-            raise CompressionError(f"Failed to compress tensor data: {e}")
+            logger.error(f"Data compression failed: {e}")
+            raise CompressionError(f"Failed to compress data: {e}")
 
     def decompress_data(self, data: bytes) -> Any:
-        """
-        Decompress data and, depending on encryption mode, optionally decrypt it.
+        """Decompress data.
 
-        For "transmission" mode we decrypt here on the server side so that
-        downstream model receives a plain PyTorch tensor.
-        For "full" mode we keep the encrypted package intact; the model (or
-        subsequent pipeline stage) must be able to operate on encrypted data.
+        PURE DECOMPRESSION ONLY:
+        1. Decompress using Blosc2
+        2. Deserialize using pickle
+        3. Return the original data (encrypted or not)
+
+        Args:
+            data: Compressed bytes to decompress
+
+        Returns:
+            Original data (whatever it was before compression)
         """
         try:
-            # First decompress using Blosc2
+            logger.debug(f"📦 Decompressing data: {len(data)} bytes")
+            
+            # STEP 1: Decompress using Blosc2
             decompressed_data = blosc2.decompress(data)
+            logger.debug(f"📦 Decompressed data: {len(decompressed_data)} bytes")
 
-            # If encryption disabled just deserialize and return
-            if not self.encryption_enabled:
-                return pickle.loads(decompressed_data)
+            # STEP 2: Deserialize using pickle
+            original_data = pickle.loads(decompressed_data)
+            logger.debug(f"📦 Deserialized data of type: {type(original_data)}")
 
-            # Attempt to deserialize – may raise if data is not pickle-encoded
-            deserialized = pickle.loads(decompressed_data)
-
-            # Check for our encryption package structure
-            if isinstance(deserialized, dict) and deserialized.get("is_encrypted"):
-                mode = deserialized.get("encryption_mode", "transmission")
-                if mode == "transmission":
-                    # TRANSMISSION MODE: Decrypt immediately and return plain tensor tuple
-                    logger.info("🔓 TRANSMISSION MODE: Decompressing and decrypting tensor for regular network processing")
-                    return self.decrypt_encrypted_package(deserialized)
-                elif mode == "full":
-                    # FULL MODE: Return encrypted package without decryption for homomorphic processing
-                    logger.info("🔐 FULL MODE: Decompressing but keeping tensor encrypted for homomorphic network processing")
-                    encrypted_tensor_data = deserialized["encrypted_tensor"]
-                    original_size = deserialized["original_size"]
-                    return (encrypted_tensor_data, original_size)
-                else:
-                    logger.warning(f"Unknown encryption_mode '{mode}', returning raw data")
-                    return deserialized
-            else:
-                # Not an encrypted package – return as-is
-                return deserialized
+            return original_data
+            
         except Exception as e:
-            logger.error(f"Tensor decompression failed: {e}")
-            raise DecompressionError(f"Failed to process received tensor data: {e}")
-
-    def decrypt_encrypted_package(self, encrypted_package: Dict[str, Any]) -> Any:
-        """
-        Decrypt an encrypted tensor package produced by `compress_data`.
-
-        Returns the standard `(tensor, original_size)` tuple expected by the
-        downstream pipeline.
-        """
-        if not encrypted_package.get("is_encrypted"):
-            raise ValueError("Package is not encrypted")
-
-        mode = encrypted_package.get("encryption_mode", "transmission")
-
-        from ..utils.tensor_encryption import decrypt_tensor
-
-        encrypted_tensor_data = encrypted_package["encrypted_tensor"]
-        original_size = encrypted_package["original_size"]
-
-        # Transmission mode → decrypt to plain tensor
-        if mode == "transmission":
-            logger.debug("🔓 Decrypting tensor for transmission mode - converting to plain tensor")
-            decrypted_tensor = decrypt_tensor(encrypted_tensor_data, self.encryption)
-            return (decrypted_tensor, original_size)
-        # Full mode → return the encrypted package (server should not decrypt)
-        elif mode == "full":
-            logger.debug("🔐 Keeping tensor encrypted for full mode - returning encrypted package")
-            return encrypted_package  # Caller decides how to handle
-        else:
-            raise ValueError(f"Unknown encryption mode: {mode}")
+            logger.error(f"Data decompression failed: {e}")
+            raise DecompressionError(f"Failed to decompress data: {e}")
 
     @staticmethod
     def _receive_chunk(conn: socket.socket, size: int) -> bytes:
-        """
-        Receive a specific sized chunk of tensor data from a socket.
-
-        This internal method provides reliable data reception by checking for
-        socket disconnections during tensor transfer.
-        """
+        """Receive a specific sized chunk of data from a socket."""
         chunk = conn.recv(size)
         if not chunk:
-            # Empty response indicates closed connection
-            raise NetworkError("Socket connection broken during tensor transmission")
+            raise NetworkError("Socket connection broken during transmission")
         return chunk
 
     def receive_full_message(self, conn: socket.socket, expected_length: int) -> bytes:
-        """
-        Receive complete tensor data of specified length from network connection.
-
-        === TENSOR SHARING - RECEPTION PHASE ===
-        Handles large tensor reception by:
-        1. Determining if the tensor fits in a single network packet
-        2. For larger tensors, receiving and assembling multiple chunks
-        3. Ensuring all bytes are received completely before processing
-
-        This method is critical for reliable tensor transmission as deep learning
-        tensors can easily exceed single packet sizes.
-        """
+        """Receive complete data of specified length from network connection."""
         if expected_length <= CHUNK_SIZE:
-            # Small tensor can be received in one operation
             return self._receive_chunk(conn, expected_length)
 
-        # Allocate space for the complete tensor data
+        # Allocate space for the complete data
         data_chunks = bytearray(expected_length)
         bytes_received = 0
 
-        # Receive tensor in chunks until complete
+        # Receive data in chunks until complete
         while bytes_received < expected_length:
             remaining = expected_length - bytes_received
             chunk_size = min(remaining, CHUNK_SIZE)
 
             try:
-                # Get next chunk of tensor data
                 chunk = self._receive_chunk(conn, chunk_size)
-
-                # Insert chunk at the correct position in the buffer
                 data_chunks[bytes_received : bytes_received + len(chunk)] = chunk
                 bytes_received += len(chunk)
             except Exception as e:
-                raise NetworkError(f"Failed to receive tensor data: {e}")
+                logger.error(f"Error receiving data chunk: {e}")
+                raise NetworkError(f"Failed to receive complete message: {e}")
 
-        # Convert to immutable bytes before returning
+        logger.debug(f"📦 Received complete message: {len(data_chunks)} bytes")
         return bytes(data_chunks)
 
     def receive_data(self, conn: socket.socket) -> Optional[Dict[str, Any]]:
-        """
-        Receive and decompress tensor data with length-prefixed framing.
-
-        === TENSOR SHARING - COMPLETE RECEPTION PIPELINE ===
-        This method handles the complete tensor reception process for distributed
-        neural network computation by:
-        1. Receiving the length prefix to know tensor size
-        2. Receiving the complete tensor data payload
-        3. Decompressing the received tensor data back to usable form
-
-        This is the entry point for receiving tensor data from network clients.
-        """
+        """Receive and decompress data from network connection."""
         try:
-            # Read length prefix to get tensor data size
-            length_data = self._receive_chunk(conn, LENGTH_PREFIX_SIZE)
-            data_length = int.from_bytes(length_data, byteorder="big")
+            # Read the length prefix
+            length_bytes = self.receive_full_message(conn, LENGTH_PREFIX_SIZE)
+            expected_length = int.from_bytes(length_bytes, byteorder="big")
+            logger.debug(f"📦 Expecting message of length: {expected_length}")
 
-            # Receive complete tensor data payload
-            compressed_data = self.receive_full_message(conn, data_length)
+            if expected_length <= 0:
+                logger.warning("Received invalid message length")
+                return None
 
-            # Decompress the received tensor data
-            decompressed_result = self.decompress_data(compressed_data)
-
-            logger.debug(f"Successfully received and decompressed {data_length} bytes")
-            return decompressed_result
-
+            # Receive the compressed data
+            compressed_data = self.receive_full_message(conn, expected_length)
+            
+            # Decompress and return
+            return self.decompress_data(compressed_data)
+            
         except Exception as e:
-            logger.error(f"Failed to receive tensor data: {e}")
+            logger.error(f"Error receiving data: {e}")
             return None
 
     def send_result(self, conn: socket.socket, result: Any) -> None:
-        """
-        Compress and transmit tensor result back to network client.
-
-        === TENSOR SHARING - RESULT TRANSMISSION ===
-        Handles the return path in tensor sharing by:
-        1. Compressing the processed tensor result
-        2. Sending the result size as a length prefix
-        3. Transmitting the compressed result data
-
-        This completes the tensor sharing cycle by returning processed data.
-        """
+        """Compress and send result over network connection."""
         try:
-            # Compress the result tensor for transmission
-            compressed_result, result_size = self.compress_data(result)
-
-            # Send length prefix followed by compressed result data
-            length_prefix = result_size.to_bytes(LENGTH_PREFIX_SIZE, byteorder="big")
-            conn.sendall(length_prefix + compressed_result)
-
-            logger.debug(f"Successfully sent {result_size} bytes of compressed result")
-
+            # Compress the result
+            compressed_data, compressed_length = self.compress_data(result)
+            
+            # Send length prefix
+            length_bytes = compressed_length.to_bytes(LENGTH_PREFIX_SIZE, byteorder="big")
+            conn.sendall(length_bytes)
+            
+            # Send compressed data
+            conn.sendall(compressed_data)
+            
+            logger.debug(f"📦 Sent compressed result: {compressed_length} bytes")
+            
         except Exception as e:
-            logger.error(f"Failed to send tensor result: {e}")
-            raise NetworkError(f"Failed to transmit result: {e}")
+            logger.error(f"Error sending result: {e}")
+            raise NetworkError(f"Failed to send result: {e}")

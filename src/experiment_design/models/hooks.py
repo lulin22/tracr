@@ -100,7 +100,15 @@ def create_forward_prehook(
         else:
             if layer_index == 0:
                 # Get banked output from Edge device
-                wrapped_model.banked_output = layer_input[0]()
+                # Now that server consistently provides EarlyOutput objects, we can simplify this
+                if callable(layer_input[0]):
+                    # EarlyOutput object - call it to get the actual tensor/data
+                    wrapped_model.banked_output = layer_input[0]()
+                else:
+                    # Fallback for direct tensor (shouldn't happen with our fix, but kept for safety)
+                    logger.warning("Received non-callable input in cloud mode - using direct tensor")
+                    wrapped_model.banked_output = layer_input[0]
+                
                 # Return dummy tensor
                 hook_output = torch.randn(1, *wrapped_model.input_size).to(device)
 

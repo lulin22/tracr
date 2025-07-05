@@ -7,7 +7,7 @@ PyTorch tensors in the split computing framework.
 
 import logging
 import torch
-from typing import Dict, Any, Union
+from typing import Dict, Any, Union, Optional, Tuple
 import numpy as np
 
 logger = logging.getLogger("split_computing_logger")
@@ -21,13 +21,22 @@ except ImportError:
     logger.warning("TensorEncryption not available - using placeholder implementations")
 
 
-def encrypt_tensor(tensor: torch.Tensor, encryption_instance: 'TensorEncryption' = None) -> Dict[str, Any]:
+def encrypt_tensor(
+    tensor: torch.Tensor, 
+    encryption_instance: 'TensorEncryption' = None,
+    prepare_for_convolution: bool = False,
+    kernel_shape: Optional[Tuple[int, int]] = None,
+    stride: int = 1
+) -> Dict[str, Any]:
     """
     Encrypt a PyTorch tensor for secure transmission.
     
     Args:
         tensor: PyTorch tensor to encrypt
         encryption_instance: Optional TensorEncryption instance to use
+        prepare_for_convolution: If True, prepare data for conv2d_im2col operations
+        kernel_shape: Tuple of (kernel_height, kernel_width) for convolution preparation
+        stride: Stride for convolution preparation
         
     Returns:
         Dictionary containing encrypted data and metadata
@@ -35,7 +44,12 @@ def encrypt_tensor(tensor: torch.Tensor, encryption_instance: 'TensorEncryption'
     try:
         if ENCRYPTION_AVAILABLE and encryption_instance:
             # Use actual homomorphic encryption
-            encrypted_data, metadata = encryption_instance.encrypt(tensor)
+            encrypted_data, metadata = encryption_instance.encrypt(
+                tensor,
+                prepare_for_convolution=prepare_for_convolution,
+                kernel_shape=kernel_shape,
+                stride=stride
+            )
             
             # Ensure shape is included in metadata
             if "shape" not in metadata:
@@ -91,24 +105,32 @@ def decrypt_tensor(encrypted_data: Dict[str, Any], encryption_instance: 'TensorE
         
         if ENCRYPTION_AVAILABLE and encryption_instance and encryption_type == "homomorphic":
             # Use actual homomorphic decryption
-            decrypted_bytes = encryption_instance.decrypt(
+            decrypted_result = encryption_instance.decrypt(
                 encrypted_data["encrypted_data"], 
                 encrypted_data["metadata"]
             )
             
-            # The decrypt method returns pickled tensor bytes
-            import pickle
-            tensor = pickle.loads(decrypted_bytes)
-            
-            # Ensure tensor has correct shape and dtype
-            if isinstance(tensor, torch.Tensor):
-                if "shape" in encrypted_data:
-                    tensor = tensor.reshape(encrypted_data["shape"])
-                if "dtype" in encrypted_data:
-                    tensor = tensor.to(getattr(torch, encrypted_data["dtype"].split(".")[-1]))
-            
-            logger.debug(f"Decrypted tensor of shape {tensor.shape} and dtype {tensor.dtype}")
-            return tensor
+            # Handle different return types based on encryption mode
+            if isinstance(decrypted_result, dict):
+                # Full mode: Return the encrypted data structure for homomorphic processing
+                # In this case, we shouldn't actually decrypt - return as special tensor wrapper
+                logger.info("Full encryption mode: Returning encrypted data structure")
+                # For now, raise an error since full mode processing isn't complete
+                raise NotImplementedError("Full homomorphic encryption mode not yet fully implemented")
+            else:
+                # Transmission mode: decrypted_result is bytes that need to be unpickled
+                import pickle
+                tensor = pickle.loads(decrypted_result)
+                
+                # Ensure tensor has correct shape and dtype
+                if isinstance(tensor, torch.Tensor):
+                    if "shape" in encrypted_data:
+                        tensor = tensor.reshape(encrypted_data["shape"])
+                    if "dtype" in encrypted_data:
+                        tensor = tensor.to(getattr(torch, encrypted_data["dtype"].split(".")[-1]))
+                
+                logger.debug(f"Decrypted tensor of shape {tensor.shape} and dtype {tensor.dtype}")
+                return tensor
         else:
             # Fallback to placeholder decryption
             logger.warning("Using placeholder decryption - not cryptographically secure")

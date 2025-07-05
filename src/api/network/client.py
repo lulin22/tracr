@@ -90,10 +90,9 @@ class SplitComputeClient:
         self.port: Optional[int] = None
         self.encryption = encryption
 
-        # Initialize compression with encryption if provided
+        # Initialize compression (encryption handled separately)
         compression_config = config.get("compression", {})
-        encryption_mode = config.get("encryption", {}).get("mode", "transmission") if encryption else "transmission"
-        self.compressor = DataCompression(compression_config, encryption=encryption, encryption_mode=encryption_mode)
+        self.compressor = DataCompression(compression_config)
 
         if encryption:
             logger.info(f"Client initialized with {encryption.mode} encryption")

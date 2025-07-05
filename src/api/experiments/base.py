@@ -13,6 +13,8 @@ import torch
 from PIL import Image
 
 from src.interface import ExperimentInterface, ModelInterface
+from ..network.encryption import TENSEAL_AVAILABLE
+from ..utils.tensor_encryption import encrypt_tensor, decrypt_tensor
 
 logger = logging.getLogger("split_computing_logger")
 
@@ -193,29 +195,81 @@ class BaseExperiment(ExperimentInterface):
         """
         # === TENSOR RECEPTION ===
         # Extract the transmitted tensor and metadata
-        output, original_size = data["input"]
+        output, original_size_or_metadata = data["input"]
         
         # Get encryption mode from config
         encryption_mode = self.config.get("encryption", {}).get("mode", "none")
         
-        # Check if tensor is encrypted and handle based on mode
-        if isinstance(output, dict) and (
-            output.get("is_encrypted") or "encrypted_data" in output
-        ):
+        # Check if we have encrypted data (bytes or dict)
+        is_encrypted_data = (
+            (isinstance(output, bytes) and encryption_mode == "full") or
+            (isinstance(output, dict) and (output.get("is_encrypted") or "encrypted_data" in output))
+        )
+        
+        if is_encrypted_data:
             if encryption_mode == "transmission":
                 # TRANSMISSION MODE: Decrypt the tensor before processing
                 logger.info("Transmission mode: Decrypting tensor before processing with regular network")
                 from ..utils.tensor_encryption import decrypt_tensor
-                output = decrypt_tensor(output)
-                logger.info(f"Decrypted tensor for regular processing, shape: {output.shape}")
+                try:
+                    # For transmission mode, output should be a dict with encryption metadata
+                    if isinstance(output, dict):
+                        output = decrypt_tensor(output, self.encryption)
+                        logger.info(f"Decrypted tensor for regular processing, shape: {output.shape}")
+                    else:
+                        raise ValueError("Expected encrypted dict for transmission mode")
+                except Exception as e:
+                    logger.error(f"Decryption failed: {e}")
+                    raise ValueError(f"Failed to decrypt tensor in transmission mode: {e}")
                 
             elif encryption_mode == "full":
-                # FULL MODE: Keep encrypted and process with homomorphic operations
+                # FULL MODE: Reconstruct encrypted tensor for homomorphic operations
                 logger.info("Full mode: Processing encrypted tensor with homomorphic operations")
-                # Output remains as encrypted dictionary for homomorphic processing
-                logger.debug(f"Encrypted tensor structure: {type(output)}")
+                
+                # For full mode, output is raw encrypted bytes and original_size_or_metadata contains metadata
+                if isinstance(output, bytes):
+                    logger.info(f"🔧 Reconstructing encrypted package from bytes and metadata")
+                    logger.info(f"🔧 Metadata type: {type(original_size_or_metadata)}")
+                    
+                    # Safely log metadata content without binary data that could crash Rich markup
+                    if isinstance(original_size_or_metadata, dict):
+                        # Create a safe copy of metadata for logging, excluding binary data
+                        safe_metadata = {}
+                        for key, value in original_size_or_metadata.items():
+                            if isinstance(value, bytes):
+                                safe_metadata[key] = f"<bytes: {len(value)} bytes>"
+                            elif isinstance(value, list) and value and isinstance(value[0], bytes):
+                                safe_metadata[key] = f"<list of {len(value)} byte objects>"
+                            else:
+                                safe_metadata[key] = value
+                        logger.info(f"🔧 Metadata content: {safe_metadata}")
+                    else:
+                        logger.info(f"🔧 Metadata content: not dict")
+                    
+                    # Reconstruct encrypted tensor package for homomorphic processing
+                    encrypted_tensor_package = {
+                        "encrypted_data": output,
+                        "metadata": original_size_or_metadata if isinstance(original_size_or_metadata, dict) else {},
+                        "is_encrypted": True
+                    }
+                    output = encrypted_tensor_package
+                    
+                    # Extract original_size from metadata or use default
+                    if isinstance(original_size_or_metadata, dict):
+                        original_size = original_size_or_metadata.get("original_size", (224, 224))
+                    else:
+                        original_size = (224, 224)  # Default for CIFAR
+                        
+                    logger.info(f"✅ Reconstructed encrypted tensor package for homomorphic processing")
+                else:
+                    logger.info(f"🔧 Using original encrypted tensor structure: {type(output)}")
+                    original_size = original_size_or_metadata
             else:
                 logger.warning(f"Unknown encryption mode: {encryption_mode}, treating as unencrypted")
+                original_size = original_size_or_metadata
+        else:
+            # Unencrypted data
+            original_size = original_size_or_metadata
         
         # Get image filename if provided in the data
         image_file = data.get("image_file", "unknown")
@@ -224,18 +278,37 @@ class BaseExperiment(ExperimentInterface):
         logger.info(f"🔍 DEBUG: encryption_mode = {encryption_mode}")
         logger.info(f"🔍 DEBUG: output type = {type(output)}")
         logger.info(f"🔍 DEBUG: output is dict = {isinstance(output, dict)}")
+        logger.info(f"🔍 DEBUG: is_encrypted_data = {is_encrypted_data}")
+        logger.info(f"🔍 DEBUG: original_size_or_metadata type = {type(original_size_or_metadata)}")
         if isinstance(output, dict):
             logger.info(f"🔍 DEBUG: output.get('is_encrypted') = {output.get('is_encrypted')}")
             logger.info(f"🔍 DEBUG: output keys = {list(output.keys())}")
         else:
             logger.info(f"🔍 DEBUG: output shape/info = {getattr(output, 'shape', 'no shape attr')}")
         
+        # === ADDITIONAL DEBUG FOR HOMOMORPHIC PATH DECISION ===
+        will_use_homomorphic = (encryption_mode == "full" and isinstance(output, dict) and output.get("is_encrypted"))
+        logger.info(f"🔍 DEBUG: will_use_homomorphic = {will_use_homomorphic}")
+        logger.info(f"🔍 DEBUG: Condition breakdown: mode={encryption_mode=='full'}, is_dict={isinstance(output, dict)}, is_encrypted={output.get('is_encrypted') if isinstance(output, dict) else 'N/A'}")
+        
         with torch.no_grad():
             # === TENSOR PREPARATION ===
             if encryption_mode == "full" and isinstance(output, dict) and output.get("is_encrypted"):
                 # For full encryption mode, we need to wrap the model with homomorphic operations
                 logger.info("Setting up homomorphic computation wrapper")
-                result = self._process_encrypted_tensor(output, data["split_layer"])
+                
+                # IMPORTANT: The client has already processed UP TO split_layer (inclusive)
+                # So the server should start processing FROM split_layer + 1
+                # Example: split_layer=0 means client processed layer 0, server starts from layer 1
+                server_start_layer = data["split_layer"] + 1
+                logger.info(f"🔧 Client processed up to layer {data['split_layer']}, server starting from layer {server_start_layer}")
+                
+                result = self._process_encrypted_tensor(output, server_start_layer)
+                
+                # Check if result is an encrypted result requiring client decryption
+                if isinstance(result, dict) and result.get("requires_client_decryption"):
+                    logger.info("🔐 Homomorphic processing returned encrypted result - forwarding to client")
+                    return result
             else:
                 # For transmission mode or unencrypted tensors, use regular processing
                 # Move tensor to appropriate computation device (GPU/CPU)
@@ -251,12 +324,44 @@ class BaseExperiment(ExperimentInterface):
 
                 # === TENSOR PROCESSING ===
                 # Continue model execution from the split point specified
-                result = self.model(output, start=data["split_layer"])
+                if data["split_layer"] > 0:
+                    # For split computation, wrap tensor in EarlyOutput to match expected hook pattern
+                    from src.experiment_design.models.hooks import EarlyOutput
+                    wrapped_output = EarlyOutput(output)
+                    # IMPORTANT: The client has already processed UP TO split_layer (inclusive)
+                    # So the server should start processing FROM split_layer + 1
+                    server_start_layer = data["split_layer"] + 1
+                    logger.info(f"🔧 Regular processing: Client processed up to layer {data['split_layer']}, server starting from layer {server_start_layer}")
+                    result = self.model(wrapped_output, start=server_start_layer)
+                else:
+                    # For complete model execution, pass tensor directly
+                    # When split_layer=0, server starts from layer 1 (not layer 0)
+                    server_start_layer = data["split_layer"] + 1
+                    logger.info(f"🔧 Regular processing: Client processed up to layer {data['split_layer']}, server starting from layer {server_start_layer}")
+                    result = self.model(output, start=server_start_layer)
                 # Handle models that return additional metadata
                 if isinstance(result, tuple):
                     result, _ = result
 
-                # === RESULT PREPARATION ===
+                # === HANDLE ENCRYPTED HOMOMORPHIC RESULTS ===
+                # Check if this is an encrypted result that should be sent back to client
+                if isinstance(result, dict) and result.get("requires_client_decryption"):
+                    logger.info("🔐 Received encrypted result requiring client decryption")
+                    logger.info("🔐 Server will NOT process this result - sending back to client")
+                    
+                    # For encrypted results, we return the encrypted data to the client
+                    # The client will decrypt it and then apply post-processing
+                    final_result = {
+                        "encrypted_result": result,
+                        "requires_client_decryption": True,
+                        "server_processed": False
+                    }
+                    
+                    # Skip CSV logging for encrypted results (client will handle this)
+                    logger.info("🔐 Skipping server-side CSV logging - client will handle post-decryption")
+                    return final_result
+
+                # === RESULT PREPARATION (for non-encrypted results) ===
                 # Move result back to CPU for network transmission
                 if isinstance(result, torch.Tensor) and result.device != torch.device("cpu"):
                     result = result.cpu()
@@ -1200,19 +1305,22 @@ class BaseExperiment(ExperimentInterface):
             Processed tensor result
         """
         try:
+            # Access the underlying model for HE compatibility check
+            underlying_model = getattr(self.model, 'model', self.model)
+            
             # Check if we can perform homomorphic operations
             can_do_he = (
                 TENSEAL_AVAILABLE and
-                hasattr(self.model, 'is_he_compatible') and
-                self.model.is_he_compatible and
                 self.encryption is not None and
-                self.encryption.mode == "full"
+                self.encryption.mode == "full" and
+                hasattr(underlying_model, 'is_he_compatible') and
+                underlying_model.is_he_compatible
             )
             
             logger.info(f"Homomorphic capability check: TenSEAL={TENSEAL_AVAILABLE}, "
-                       f"HE_model={hasattr(self.model, 'is_he_compatible')}, "
                        f"encryption={self.encryption is not None}, "
-                       f"full_mode={self.encryption.mode == 'full' if self.encryption else False}")
+                       f"full_mode={self.encryption.mode == 'full' if self.encryption else False}, "
+                       f"model_he_compatible={hasattr(underlying_model, 'is_he_compatible') and underlying_model.is_he_compatible}")
             
             if not can_do_he:
                 logger.warning("⚠️  Fallback: Decrypting for processing due to incomplete homomorphic implementation")
@@ -1237,14 +1345,56 @@ class BaseExperiment(ExperimentInterface):
             encrypted_data = encrypted_output["encrypted_data"]
             metadata = encrypted_output["metadata"]
             
-            # Process through homomorphic model
-            result = self.model.process_encrypted(encrypted_data, metadata, start=start_layer)
+            # Pass encryption context to the model for homomorphic processing
+            if hasattr(self.model, 'set_encryption_context'):
+                self.model.set_encryption_context(self.encryption)
+            else:
+                # Store encryption reference directly on the model
+                self.model.encryption = self.encryption
+                logger.debug("Passed encryption context to model for homomorphic processing")
             
-            # Ensure result is a tensor
-            if not isinstance(result, torch.Tensor):
-                raise ValueError("Homomorphic processing did not return a tensor")
-            
-            return result
+            try:
+                # Process through homomorphic model
+                result = self.model.process_encrypted(encrypted_data, metadata, start=start_layer)
+                
+                # Handle different result types from homomorphic processing
+                if isinstance(result, dict) and result.get("requires_client_decryption"):
+                    # This is an encrypted result that should be sent back to client
+                    logger.info("✅ Homomorphic processing returned encrypted result for client decryption")
+                    return result
+                elif isinstance(result, torch.Tensor):
+                    # This is a regular tensor result
+                    logger.info("✅ Homomorphic processing returned tensor result")
+                    return result
+                else:
+                    # Unexpected result type
+                    logger.error(f"❌ Homomorphic processing returned unexpected type: {type(result)}")
+                    raise ValueError(f"Homomorphic processing returned unexpected type: {type(result)}, expected tensor or encrypted result dict")
+                
+            except NotImplementedError as e:
+                # Handle the case where homomorphic operations are not yet fully implemented
+                logger.warning(f"Homomorphic processing not yet implemented: {e}")
+                logger.info("Falling back to decryption and regular processing")
+                
+                # Fall back to decrypting and processing normally
+                from ..utils.tensor_encryption import decrypt_tensor
+                try:
+                    decrypted_tensor = decrypt_tensor(encrypted_output, self.encryption)
+                    
+                    # Ensure tensor is properly shaped
+                    if isinstance(decrypted_tensor, torch.Tensor):
+                        if "shape" in encrypted_output:
+                            decrypted_tensor = decrypted_tensor.reshape(encrypted_output["shape"])
+                        if "dtype" in encrypted_output:
+                            decrypted_tensor = decrypted_tensor.to(getattr(torch, encrypted_output["dtype"].split(".")[-1]))
+                    
+                    # Process with regular model
+                    return self.model(decrypted_tensor, start=start_layer)
+                    
+                except Exception as decrypt_error:
+                    logger.error(f"Fallback decryption also failed: {decrypt_error}")
+                    raise RuntimeError(f"Both homomorphic processing and fallback decryption failed. "
+                                     f"Homomorphic error: {e}. Decryption error: {decrypt_error}")
             
         except Exception as e:
             logger.error(f"Error in encrypted tensor processing: {e}")

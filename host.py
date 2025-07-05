@@ -299,6 +299,24 @@ class ExperimentHost:
             logger.info(f"Final encryption password: {encryption_password}")
             logger.info(f"Final encryption key file: {encryption_key_file}")
             
+            # Update config to reflect encryption settings
+            if encryption_enabled:
+                # Modify the config dictionary to include encryption settings
+                if "encryption" not in self.config:
+                    self.config["encryption"] = {}
+                
+                self.config["encryption"]["enabled"] = True
+                self.config["encryption"]["mode"] = "full"  # Force full HE mode for command-line encryption
+                if encryption_password:
+                    self.config["encryption"]["password"] = encryption_password
+                if encryption_key_file:
+                    self.config["encryption"]["key_file"] = encryption_key_file
+                self.config["encryption"]["degree"] = encryption_degree
+                self.config["encryption"]["scale"] = encryption_scale
+                
+                logger.info("Updated config with encryption enabled")
+                logger.info(f"Encryption config: {self.config['encryption']}")
+            
             # Log encryption settings
             if encryption_enabled:
                 if encryption_password:

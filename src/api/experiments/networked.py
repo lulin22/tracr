@@ -22,6 +22,9 @@ from .base import BaseExperiment, ProcessingTimes
 from ..network import DataCompression, create_network_client
 from ..network.encryption import TensorEncryption
 
+# Import encryption utilities
+from ..utils.tensor_encryption import encrypt_tensor, decrypt_tensor
+
 logger = logging.getLogger("split_computing_logger")
 
 
@@ -91,15 +94,15 @@ class NetworkedExperiment(BaseExperiment):
         
         # No logging about encryption during initialization to keep logs identical
 
-        # Setup network client for tensor sharing with the server (no encryption during setup)
+        # Setup network client for tensor sharing with the server
         try:
             logger.info(f"Creating network client to connect to {host}:{port}")
-            # Create client without encryption during initialization
+            # Create client - it will check config for encryption intent
             self.network_client = create_network_client(
                 config=self.config, 
                 host=host, 
                 port=port,
-                encryption=None  # No encryption during setup
+                encryption=None  # Encryption object created later via lazy initialization
             )
             logger.info("Network client created successfully")
         except Exception as e:
@@ -112,13 +115,9 @@ class NetworkedExperiment(BaseExperiment):
             logger.info(
                 f"Initializing data compression with config: {compression_config}"
             )
-            # Initialize without encryption during setup
-            self.compress_data = DataCompression(
-                compression_config,
-                encryption=None,  # No encryption during setup
-                encryption_mode="transmission"
-            )
-            logger.info("Data compression without encryption initialized successfully")
+            # Initialize compression (encryption handled separately)
+            self.compress_data = DataCompression(compression_config)
+            logger.info("Data compression initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize data compression: {e}", exc_info=True)
             raise
@@ -163,10 +162,9 @@ class NetworkedExperiment(BaseExperiment):
                         scale=self.encryption_scale
                     )
                 
-                # Update network client and data compression with encryption
+                # Update network client with encryption
                 self.network_client.encryption = self.encryption
-                self.compress_data.encryption = self.encryption
-                self.compress_data.encryption_mode = self.encryption_mode
+                logger.info(f"Network client updated with {self.encryption_mode} encryption")
                 
                 self.encryption_initialized = True
                 logger.info(f"Tensor encryption initialized successfully with mode={self.encryption_mode}")
@@ -176,6 +174,58 @@ class NetworkedExperiment(BaseExperiment):
                 logger.warning("Continuing without encryption due to initialization failure")
                 self.encryption = None
                 self.encryption_requested = False
+
+    def _extract_tensor_from_output(self, output: Any) -> torch.Tensor:
+        """
+        Extract a tensor from various output types including EarlyOutput objects.
+        
+        This handles the case where EarlyOutput contains a dictionary mapping
+        layer indices to tensors. In such cases, it returns the tensor from
+        the highest layer index (most recent computation).
+        
+        Args:
+            output: Model output which could be a tensor, EarlyOutput, or other types
+            
+        Returns:
+            torch.Tensor: The extracted tensor
+            
+        Raises:
+            ValueError: If no valid tensor can be extracted
+        """
+        # Handle direct tensor
+        if isinstance(output, torch.Tensor):
+            return output
+        
+        # Handle EarlyOutput objects
+        if hasattr(output, '__call__') and hasattr(output, 'inner_dict'):
+            # This is an EarlyOutput object - extract the tensor data
+            inner_data = output()
+            logger.debug(f"Extracted data from EarlyOutput: type={type(inner_data)}")
+            
+            if isinstance(inner_data, torch.Tensor):
+                # Simple case: EarlyOutput contains a single tensor
+                return inner_data
+            elif isinstance(inner_data, dict):
+                # EarlyOutput contains a dictionary mapping layer indices to tensors
+                logger.debug(f"EarlyOutput contains dict with keys: {list(inner_data.keys())}")
+                
+                # Find the highest layer index (most recent computation)
+                if inner_data:
+                    max_layer_idx = max(inner_data.keys())
+                    tensor = inner_data[max_layer_idx]
+                    logger.debug(f"Using tensor from layer {max_layer_idx}: shape={tensor.shape}")
+                    
+                    if isinstance(tensor, torch.Tensor):
+                        return tensor
+                    else:
+                        raise ValueError(f"Expected tensor at layer {max_layer_idx}, got {type(tensor)}")
+                else:
+                    raise ValueError("EarlyOutput contains empty dictionary")
+            else:
+                raise ValueError(f"EarlyOutput contains unsupported data type: {type(inner_data)}")
+        
+        # Handle other types
+        raise ValueError(f"Cannot extract tensor from output of type {type(output)}")
 
     def process_single_image(
         self,
@@ -199,16 +249,9 @@ class NetworkedExperiment(BaseExperiment):
             self._ensure_encryption_initialized()
             
             # ===== ENCRYPTION PREPARATION =====
+            # We already know encryption state from initialization and lazy setup
             original_inputs = inputs.clone() if self.encryption else None
-            
-            if self.encryption and self.encryption.mode == "full":
-                logger.info(f"Using homomorphic encryption for end-to-end secure processing")
-                self._input_encrypted = True
-            elif self.encryption and self.encryption.mode == "transmission":
-                logger.info(f"Using transmission encryption for secure data transfer")
-                self._input_encrypted = True
-            else:
-                self._input_encrypted = False
+            self._input_encrypted = self.encryption is not None
             
             # ===== HOST DEVICE PROCESSING =====
             # Process the initial part of the model (up to split_layer) on the local device
@@ -236,14 +279,41 @@ class NetworkedExperiment(BaseExperiment):
                 else (0, 0)
             )
             
-            # Create data package for transmission
-            data_to_send = (output, original_size)
+            # ===== ENCRYPTION STEP (if enabled) =====
+            if self._input_encrypted:
+                logger.info(f"🔐 Encrypting tensor for {self.encryption.mode} mode transmission")
+                
+                # Extract tensor data from EarlyOutput wrapper if needed
+                try:
+                    tensor_to_encrypt = self._extract_tensor_from_output(output)
+                    logger.debug(f"Extracted tensor for encryption: type={type(tensor_to_encrypt)}, shape={tensor_to_encrypt.shape}")
+                except ValueError as e:
+                    logger.error(f"Failed to extract tensor for encryption: {e}")
+                    raise ValueError(f"Cannot encrypt data: {e}")
+                
+                # Simple encryption - no layer-type complexity needed
+                # TenSEAL uses unified context that works for all layer types
+                encrypted_data = encrypt_tensor(tensor_to_encrypt, self.encryption)
+                
+                # Create data package with encrypted tensor
+                data_to_send = (encrypted_data, original_size)
+                logger.info(f"✅ Tensor encrypted successfully for {self.encryption.mode} mode")
+            else:
+                # No encryption - extract tensor data from EarlyOutput wrapper if needed
+                try:
+                    tensor_to_send = self._extract_tensor_from_output(output)
+                    logger.debug(f"Extracted tensor for plain transmission: type={type(tensor_to_send)}, shape={tensor_to_send.shape}")
+                except ValueError as e:
+                    logger.error(f"Failed to extract tensor for transmission: {e}")
+                    raise ValueError(f"Cannot send data: {e}")
+                
+                data_to_send = (tensor_to_send, original_size)
+                logger.debug("📦 Sending plain (unencrypted) tensor")
 
-            # Compress (and encrypt if enabled) the tensor package
-            compressed_output, output_size = self.compress_data.compress_data(
-                data_to_send
-            )
-            logger.debug(f"Compressed tensor data size: {output_size} bytes")
+            # ===== COMPRESSION STEP (encrypted or plain data) =====
+            # Compress the data package (encrypted data or plain tensor)
+            compressed_output, output_size = self.compress_data.compress_data(data_to_send)
+            logger.debug(f"📦 Compressed data size: {output_size} bytes")
 
             host_time = time.time() - host_start
 
@@ -266,18 +336,57 @@ class NetworkedExperiment(BaseExperiment):
                 )
                 
                 # ===== DECRYPTION PHASE (if needed) =====
-                if self._input_encrypted and self.encryption:
+                if self._input_encrypted:
                     if self.encryption.mode == "full":
-                        # For homomorphic encryption (full mode), the compression module
-                        # returns the encrypted package structure. The result structure
-                        # should be: (encrypted_tensor_data, original_size)
-                        # where encrypted_tensor_data contains the encrypted result
-                        logger.info("Processing homomorphic encryption result")
-                        
-                        # The compression module already handles the format conversion
-                        # No additional decryption needed here - results remain encrypted
-                        # for homomorphic processing downstream
-                        logger.debug("Result processed for homomorphic computation")
+                        # Check if server returned encrypted result requiring client decryption
+                        if isinstance(processed_result, dict) and processed_result.get("requires_client_decryption"):
+                            logger.info("🔐 Received encrypted result from server - performing client-side decryption")
+                            
+                            # Extract the serialized encrypted result from the server response
+                            serialized_encrypted_result = processed_result.get("encrypted_result")
+                            
+                            if serialized_encrypted_result and isinstance(serialized_encrypted_result, bytes):
+                                try:
+                                    # Deserialize the TenSEAL object from bytes
+                                    import tenseal as ts
+                                    context = self.encryption.get_context()
+                                    encrypted_tensor = ts.ckks_vector_from(context, serialized_encrypted_result)
+                                    logger.info("✅ Successfully deserialized encrypted result from server")
+                                    
+                                    # Decrypt the homomorphic result using the client's private key
+                                    decrypted_values = encrypted_tensor.decrypt()
+                                    logger.info(f"✅ Successfully decrypted homomorphic result: {decrypted_values[:10]}...")
+                                    
+                                    # Convert decrypted values to tensor format
+                                    import torch
+                                    decrypted_tensor = torch.tensor([decrypted_values], dtype=torch.float32)
+                                    
+                                    # Apply post-processing to get final classification result
+                                    processed_result = self.post_processor.process_output(decrypted_tensor, original_size)
+                                    logger.info("✅ Post-processing completed on decrypted result")
+                                    
+                                except Exception as e:
+                                    logger.error(f"❌ Failed to decrypt homomorphic result: {e}")
+                                    logger.error("🚨 This indicates a problem with the encryption/decryption process")
+                                    logger.error(f"🔍 DEBUG: serialized_encrypted_result type: {type(serialized_encrypted_result)}")
+                                    logger.error(f"🔍 DEBUG: serialized_encrypted_result length: {len(serialized_encrypted_result) if isinstance(serialized_encrypted_result, bytes) else 'N/A'}")
+                                    return None
+                            else:
+                                logger.error("❌ No valid serialized encrypted result found in server response")
+                                logger.error(f"🔍 DEBUG: encrypted_result type: {type(serialized_encrypted_result)}")
+                                logger.error(f"🔍 DEBUG: processed_result keys: {list(processed_result.keys())}")
+                                return None
+                        else:
+                            # For homomorphic encryption (full mode), the compression module
+                            # returns the encrypted package structure. The result structure
+                            # should be: (encrypted_tensor_data, original_size)
+                            # where encrypted_tensor_data contains the encrypted result
+                            logger.info("Processing homomorphic encryption result")
+                            
+                            # The compression module already handles the format conversion
+                            # No additional decryption needed here - results remain encrypted
+                            # for homomorphic processing downstream
+                            logger.debug("Result processed for homomorphic computation")
                     else:
                         # For transmission mode, the compression module automatically
                         # decrypts the result - no additional processing needed
@@ -328,6 +437,8 @@ class NetworkedExperiment(BaseExperiment):
                 output, _ = output
 
             return output
+
+
 
     def test_split_performance(
         self, split_layer: int, batch_size: int = 1, num_runs: int = 5
