@@ -153,50 +153,49 @@ class MNISTConvNetHomomorphicWrapper(BaseHomomorphicWrapper):
         return output_h * output_w
     
     def validate_metadata_for_layers(self, metadata: Optional[Dict], start_layer: int) -> bool:
-        """Validate metadata based on which layers will actually be processed.
+        """Validate metadata based on which hook layers will actually be processed.
         
         Args:
             metadata: Metadata dictionary to validate
-            start_layer: Starting layer index for processing
+            start_layer: Starting hook layer index for processing
             
         Returns:
-            bool: True if metadata is valid for the layers to be processed
+            bool: True if metadata is valid for the hook layers to be processed
         """
         if metadata is None:
             metadata = {}
         
-        # Check what layers we'll be processing
-        layers_to_process = list(range(start_layer, 6))  # MNIST ConvNet has layers 0-5
+        # Check what hook layers we'll be processing
+        hook_layers_to_process = list(range(start_layer, 3))  # MNIST ConvNet has hook layers 0-2
         
-        # Layer 0 (Conv2d) needs windows_nb if it will be processed
-        if 0 in layers_to_process:
+        # Hook Layer 0 (conv1 operations) needs windows_nb if it will be processed
+        if 0 in hook_layers_to_process:
             if 'windows_nb' not in metadata:
-                self.logger.warning("Layer 0 (Conv2d) will be processed but windows_nb not provided, will calculate default")
+                self.logger.warning("Hook Layer 0 (conv1 operations) will be processed but windows_nb not provided, will calculate default")
                 # Don't fail validation, just warn - we can calculate it
         
-        # Other layers don't need special metadata currently
-        # Layers 1, 4: Square activation (no special metadata needed)  
-        # Layer 2: Flatten (no special metadata needed)
-        # Layers 3, 5: Linear (weights extracted from model, no metadata needed)
+        # Other hook layers don't need special metadata currently
+        # Hook Layer 1: FC1 + square (weights extracted from model, no metadata needed)
+        # Hook Layer 2: FC2 (weights extracted from model, no metadata needed)
         
-        self.logger.info(f"✅ Metadata validation passed for layers {layers_to_process}")
+        self.logger.info(f"✅ Metadata validation passed for hook layers {hook_layers_to_process}")
         return True  # Always pass validation, just log warnings
     
     def homomorphic_forward(self, encrypted_tensor, metadata: Optional[Dict] = None, start_layer: int = 0) -> Union[torch.Tensor, Dict[str, Any]]:
         """Perform homomorphic forward pass starting from the specified layer.
         
-        MNIST ConvNet Architecture:
-        - Layer 0: Conv2d (1→4 channels, 28x28→8x8)
-        - Layer 1: Square activation  
-        - Layer 2: Flatten (conceptual)
-        - Layer 3: Linear (FC1, 256→64)
-        - Layer 4: Square activation
-        - Layer 5: Linear (FC2, 64→10)
+        MNIST ConvNet Layer Mapping (restored to original working logic):
+        - Layer 0: Process from raw input (28x28) - Full network
+        - Layer 1: Process from conv output (4x8x8) - Post-conv1
+        - Layer 2: Process from first activation - Post-square1
+        - Layer 3: Process from flatten - Post-FC1
+        - Layer 4: Process from FC1 output - Post-square2
+        - Layer 5: Process from second activation - Final layer
         
         Args:
             encrypted_tensor: TenSEAL encrypted input 
             metadata: Metadata about the encrypted tensor
-            start_layer: Layer index to start processing from (specified by split config)
+            start_layer: Layer index to start processing from
             
         Returns:
             Dict containing encrypted result for full HE mode, or torch.Tensor for transmission mode
@@ -204,213 +203,33 @@ class MNISTConvNetHomomorphicWrapper(BaseHomomorphicWrapper):
         try:
             self.log_operation(f"MNIST ConvNet Forward Pass (start_layer={start_layer})", input_type=type(encrypted_tensor))
             
-            # Layer-aware metadata validation: only check fields needed for layers we'll process
-            if not self.validate_metadata_for_layers(metadata, start_layer):
-                self.logger.warning("Invalid metadata - proceeding with defaults")
-                metadata = metadata or {}
+            # Use original working logic with proper layer mapping
+            if metadata is None:
+                metadata = {}
             
-            # TRUE LAYER-WISE PROCESSING: Execute from start_layer onwards
-            # No reconstruction or reprocessing - just continue from where client left off
-            self.logger.info(f"🔧 TRUE LAYER-WISE: Starting execution from layer {start_layer}")
-            
-            # Execute the layer operations sequentially starting from start_layer
-            return self._execute_layers_from(encrypted_tensor, metadata, start_layer)
+            # ONLY ADJUST INDEXING: Map start_layer to correct original method
+            # Based on hook system: client processes through hook N, server starts from layer N+1
+            if start_layer == 0:
+                # Start from raw input - use original method
+                return self._process_from_input(encrypted_tensor, metadata)
+            elif start_layer == 1:
+                # After hook 0 (conv1+square+flatten) - skip to FC1 processing
+                # Client already did conv1+square+flatten, so skip the square in _process_from_conv_output
+                return self._process_from_activation1(encrypted_tensor, metadata)
+            elif start_layer == 2:
+                # After hook 1 (fc1+square) - start from FC2
+                return self._process_from_fc1(encrypted_tensor, metadata)
+            elif start_layer == 3:
+                # After hook 2 (fc2) - return final result
+                return self._process_from_activation2(encrypted_tensor, metadata)
+            else:
+                self.logger.error(f"Invalid start_layer: {start_layer}")
+                return self.create_fallback_result(num_classes=10)
                 
         except Exception as e:
             self.logger.error(f"MNIST ConvNet homomorphic forward pass failed: {e}")
             return self.create_fallback_result(num_classes=10)
-    
-    def _execute_layers_from(self, encrypted_tensor, metadata: Dict, start_layer: int) -> Dict[str, Any]:
-        """Execute MNIST ConvNet layers sequentially starting from start_layer.
-        
-        This is TRUE layer-wise processing - no reconstruction, just continue from where client left off.
-        
-        Args:
-            encrypted_tensor: The encrypted tensor from client (output of layer start_layer-1)
-            metadata: Metadata about the tensor
-            start_layer: Layer to start execution from
-            
-        Returns:
-            Final encrypted result
-        """
-        try:
-            # Import TenSEAL for operations
-            import tenseal as ts
-            
-            # STEP 1: Properly receive and format the tensor from client
-            current_tensor = self._prepare_received_tensor(encrypted_tensor, metadata, start_layer)
-            
-            # Execute layers sequentially from start_layer to end
-            for layer_idx in range(start_layer, 6):  # MNIST ConvNet has 6 layers (0-5)
-                self.logger.info(f"🔧 Executing layer {layer_idx}")
-                
-                if layer_idx == 0:
-                    # Layer 0: Conv2d (1→4 channels, 28x28→8x8)
-                    current_tensor = self._apply_conv1(current_tensor, metadata)
-                    self.logger.info("✅ Layer 0 (Conv2d) applied")
-                    
-                elif layer_idx == 1:
-                    # Layer 1: Square activation
-                    current_tensor = self._apply_square_activation(current_tensor)
-                    self.logger.info("✅ Layer 1 (Square activation) applied")
-                    
-                elif layer_idx == 2:
-                    # Layer 2: Flatten (conceptual - no actual operation needed for TenSEAL)
-                    current_tensor = self._apply_flatten(current_tensor)
-                    self.logger.info("✅ Layer 2 (Flatten) applied")
-                    
-                elif layer_idx == 3:
-                    # Layer 3: Linear (FC1, 256→64)
-                    current_tensor = self._apply_fc1(current_tensor)
-                    self.logger.info("✅ Layer 3 (FC1) applied")
-                    
-                elif layer_idx == 4:
-                    # Layer 4: Square activation
-                    current_tensor = self._apply_square_activation(current_tensor)
-                    self.logger.info("✅ Layer 4 (Square activation) applied")
-                    
-                elif layer_idx == 5:
-                    # Layer 5: Linear (FC2, 64→10)
-                    current_tensor = self._apply_fc2(current_tensor)
-                    self.logger.info("✅ Layer 5 (FC2) applied")
-            
-            # Return final result
-            self.log_operation("TRUE LAYER-WISE Forward Pass Complete", status="success")
-            
-            # DEBUG: Log final encrypted result properties
-            try:
-                result_hash = hash(str(current_tensor)[:200])
-                self.logger.info(f"🔍 DEBUG: Final encrypted result hash: {result_hash}")
-                self.logger.info(f"🔍 DEBUG: Final result type: {type(current_tensor)}")
-                if hasattr(current_tensor, 'size'):
-                    self.logger.info(f"🔍 DEBUG: Final result size: {current_tensor.size()}")
-            except Exception as e:
-                self.logger.info(f"🔍 DEBUG: Could not get final result properties: {e}")
-            
-            # SERIALIZE TENSEAL OBJECT IMMEDIATELY FOR CONSISTENT COMPRESSION INPUT
-            self.logger.info("🔧 Serializing TenSEAL result for consistent compression")
-            serialized_tensor = current_tensor.serialize()
-            self.logger.info(f"✅ TenSEAL object serialized to {len(serialized_tensor)} bytes")
-            
-            return {
-                "encrypted_result": serialized_tensor,  # Now it's bytes, not a TenSEAL object
-                "is_homomorphic": True,
-                "model_type": "mnist_convnet",
-                "wrapper_class": self.__class__.__name__,
-                "metadata": {
-                    "output_shape": [1, 10],
-                    "start_layer": start_layer,
-                    "final_layer": 5,
-                    "processing_method": "true_layer_wise",
-                    "tensor_serialized": True  # Mark that tensor is already serialized
-                }
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error in layer-wise execution: {e}")
-            raise
-    
-    def _apply_conv1(self, encrypted_tensor, metadata: Dict):
-        """Apply Conv1 layer operations."""
-        # Get windows_nb from metadata
-        windows_nb = metadata.get('windows_nb', self.calculate_windows_nb())
-        
-        # Apply conv1 layer following test6.py pattern
-        enc_channels = []
-        for i, (kernel, bias) in enumerate(zip(self.conv1_weight, self.conv1_bias)):
-            y = encrypted_tensor.conv2d_im2col(kernel, windows_nb) + bias
-            enc_channels.append(y)
-        
-        # Pack all channels into a single flattened vector
-        import tenseal as ts
-        return ts.CKKSVector.pack_vectors(enc_channels)
-    
-    def _apply_square_activation(self, encrypted_tensor):
-        """Apply square activation."""
-        encrypted_tensor.square_()
-        return encrypted_tensor
-    
-    def _apply_flatten(self, encrypted_tensor):
-        """Apply flatten operation (conceptual for TenSEAL)."""
-        # For TenSEAL, flatten is implicit - the tensor is already in the right format
-        return encrypted_tensor
-    
-    def _apply_fc1(self, encrypted_tensor):
-        """Apply FC1 linear layer."""
-        return encrypted_tensor.mm(self.fc1_weight) + self.fc1_bias
-    
-    def _apply_fc2(self, encrypted_tensor):
-        """Apply FC2 linear layer."""
-        return encrypted_tensor.mm(self.fc2_weight) + self.fc2_bias
-    
-    def _prepare_received_tensor(self, encrypted_tensor, metadata: Dict, start_layer: int):
-        """Prepare the received tensor based on how the client sent it.
-        
-        This handles different tensor formats:
-        1. encoded_channels: Client prepared for convolution (reconstruct)
-        2. Direct tensor: Client sent as-is (use directly)
-        
-        Args:
-            encrypted_tensor: Raw encrypted tensor from client
-            metadata: Metadata containing tensor information
-            start_layer: Layer to start processing from
-            
-        Returns:
-            Properly formatted tensor ready for layer processing
-        """
-        import tenseal as ts
-        
-        self.logger.info(f"🔧 Preparing received tensor for start_layer={start_layer}")
-        
-        # DEBUG: Log encrypted tensor properties to verify different images produce different tensors
-        try:
-            tensor_hash = hash(str(encrypted_tensor)[:200])  # Hash first 200 chars of tensor representation
-            self.logger.info(f"🔍 DEBUG: Encrypted tensor hash: {tensor_hash}")
-            self.logger.info(f"🔍 DEBUG: Encrypted tensor type: {type(encrypted_tensor)}")
-            if hasattr(encrypted_tensor, 'size'):
-                self.logger.info(f"🔍 DEBUG: Encrypted tensor size: {encrypted_tensor.size()}")
-        except Exception as e:
-            self.logger.info(f"🔍 DEBUG: Could not get tensor properties: {e}")
-        
-        if metadata and 'encoded_channels' in metadata:
-            # Client sent encoded channels (convolution preparation)
-            self.logger.info("📦 Client sent encoded_channels - reconstructing tensor")
-            encoded_channels = metadata['encoded_channels']
-            
-            # DEBUG: Log channel details to verify different images produce different channels
-            self.logger.info(f"🔍 DEBUG: Number of encoded channels: {len(encoded_channels)}")
-            for i, channel_bytes in enumerate(encoded_channels):
-                channel_hash = hash(str(channel_bytes)[:100])  # Hash first 100 chars
-                self.logger.info(f"🔍 DEBUG: Channel {i} hash: {channel_hash}")
-            
-            # Reconstruct channels
-            channels = []
-            for i, channel_bytes in enumerate(encoded_channels):
-                channel = ts.ckks_vector_from(self.encryption_context, channel_bytes)
-                channels.append(channel)
-                self.logger.info(f"📦 Reconstructed channel {i+1}/{len(encoded_channels)}")
-            
-            # Pack channels into single tensor
-            tensor = ts.CKKSVector.pack_vectors(channels)
-            self.logger.info(f"✅ Reconstructed tensor from {len(channels)} channels")
-            
-            # DEBUG: Log final tensor properties
-            try:
-                final_tensor_hash = hash(str(tensor)[:200])
-                self.logger.info(f"🔍 DEBUG: Final reconstructed tensor hash: {final_tensor_hash}")
-            except Exception as e:
-                self.logger.info(f"🔍 DEBUG: Could not get final tensor hash: {e}")
-                
-            return tensor
-            
-        else:
-            # Client sent tensor as-is (standard format)
-            self.logger.info("📦 Client sent tensor as-is - using directly")
-            return encrypted_tensor
 
-    # DEPRECATED: Old layer-specific methods - replaced by true layer-wise processing
-    # Keeping for reference but no longer used
-    
     def _process_from_input(self, encrypted_tensor, metadata: Dict) -> Dict[str, Any]:
         """Process from raw input (28x28) - Full network execution.
         
@@ -429,11 +248,10 @@ class MNISTConvNetHomomorphicWrapper(BaseHomomorphicWrapper):
                 self.logger.info(f"Calculated windows_nb: {windows_nb}")
             
             # Apply conv1 layer following test6.py pattern (lines 124-129)
+            import tenseal as ts
             enc_channels = []
             for i, (kernel, bias) in enumerate(zip(self.conv1_weight, self.conv1_bias)):
-                # Convert kernel to list format for TenSEAL
-                kernel_list = kernel.tolist()
-                y = encrypted_tensor.conv2d_im2col(kernel_list, windows_nb) + bias
+                y = encrypted_tensor.conv2d_im2col(kernel, windows_nb) + bias
                 enc_channels.append(y)
                 self.log_operation(f"✅ Conv1 channel {i+1}/{len(self.conv1_weight)} processed")
             
@@ -510,13 +328,31 @@ class MNISTConvNetHomomorphicWrapper(BaseHomomorphicWrapper):
         """Process from first activation output - Start from Layer 2.
         
         Based on test6.py working pattern:
-        - Input: Squared encrypted tensor
+        - Input: Squared encrypted tensor (after conv1+square+flatten)
         - Apply: FC1 layer (matrix multiplication)
         - Continue: To next activation
         """
         self.log_operation("Processing from first activation (Layer 2)")
         
         try:
+            # Handle tensor reconstruction if client sent encoded_channels
+            if metadata and 'encoded_channels' in metadata:
+                self.logger.info("🔍 DEBUG: Found encoded_channels - reconstructing tensor")
+                encoded_channels = metadata['encoded_channels']
+                self.logger.info(f"🔍 DEBUG: Number of encoded channels: {len(encoded_channels)}")
+                
+                # Reconstruct the tensor from encoded channels
+                import tenseal as ts
+                feature_maps = []
+                for i, channel_bytes in enumerate(encoded_channels):
+                    feature_map = ts.ckks_vector_from(self.encryption_context, channel_bytes)
+                    feature_maps.append(feature_map)
+                    self.logger.info(f"🔧 Reconstructed feature map {i+1}/{len(encoded_channels)}")
+                
+                # Pack feature maps for FC1 processing
+                encrypted_tensor = ts.CKKSVector.pack_vectors(feature_maps)
+                self.logger.info("✅ Tensor reconstructed from encoded channels")
+            
             # DEBUG: Check tensor state before matrix multiplication
             self.logger.info(f"🔍 DEBUG: Before FC1 mm - encrypted_tensor type: {type(encrypted_tensor)}")
             self.logger.info(f"🔍 DEBUG: FC1 weight shape: {len(self.fc1_weight)}x{len(self.fc1_weight[0])}")
