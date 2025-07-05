@@ -244,6 +244,15 @@ class NetworkedExperiment(BaseExperiment):
         4. Process results locally and optionally save visualization
         """
         try:
+            # Record image file being processed (one file per run)
+            if not hasattr(self, '_run_timestamp'):
+                import os
+                from datetime import datetime
+                self._run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                os.makedirs("results/mnist_convnet_split", exist_ok=True)
+            
+            with open(f"results/mnist_convnet_split/actual_images_{self._run_timestamp}.txt", "a") as f:
+                f.write(f"{image_file}\n")
             # ===== LAZY ENCRYPTION INITIALIZATION =====
             # Initialize encryption only when needed for tensor transmission
             self._ensure_encryption_initialized()

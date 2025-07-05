@@ -63,6 +63,16 @@ class ImageNetPredictor:
         for i, (class_name, prob) in enumerate(predictions, 1):
             logger.debug(f"#{i:<2} {class_name:<30} - {prob:>6.2%}")
         logger.debug("-" * 50)
+        
+        # Write predictions to separate file (one file per run)
+        if not hasattr(self, '_run_timestamp'):
+            import os
+            from datetime import datetime
+            self._run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            os.makedirs("results/mnist_convnet_split", exist_ok=True)
+        
+        with open(f"results/mnist_convnet_split/predicted_result_{self._run_timestamp}.txt", "a") as f:
+            f.write(f"Top prediction: {predictions[0][0]} - {predictions[0][1]:.4f}\n")
 
 
 class YOLODetector:
